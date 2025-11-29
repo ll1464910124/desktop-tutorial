@@ -420,9 +420,1355 @@ class AdvancedTradingDecisionSystem:
             'data_quality_score': max(0, 100 - score_deduction * 20)
         }
 
-# ... 其他类保持不变 (RiskManagementSystem, MarketSentimentAnalyzer, BacktestingEngine, TradingDecisionEngine) ...
+class TradingDecisionEngine:
+    def __init__(self):
+        self.decision_rules = self.define_decision_rules()
+    
+    def define_decision_rules(self):
+        """定义分层指挥体系决策规则"""
+        rules = {
+            'trend_indicators': {
+                'MACD': {
+                    'S级': {'condition': '(MACD > 0) & (MACD > MACD_signal) & (MACD_slope > 0) & (DEA_slope > 0)', 'score': 40},
+                    'A级': {'condition': '(MACD < 0) & (MACD > MACD_signal) & (MACD_hist > 0)', 'score': 15},
+                    'B级': {'condition': '(MACD > 0) & (MACD < MACD_signal)', 'score': -20},
+                    'C级': {'condition': '(MACD < 0) & (MACD < MACD_signal) & (MACD_hist < 0)', 'score': -40}
+                },
+                'MA': {
+                    '多头排列': {'condition': '(MA20 > MA60) & (MA60 > MA120) & (MA60_direction > 0)', 'score': 10},
+                    '空头排列': {'condition': '(MA20 < MA60) & (MA60 < MA120) & (MA60_direction < 0)', 'score': -10},
+                    '金叉': {'condition': '(MA60 > MA60.shift(1)) & (MA20 > MA60)', 'score': 5},
+                    '纠缠': {'condition': 'abs(MA20-MA60)/MA60 < 0.02', 'score': 0}
+                },
+                'SAR': {
+                    '多头': {'condition': 'SAR_trend > 0', 'score': 2},
+                    '空头': {'condition': 'SAR_trend < 0', 'score': -2}
+                }
+            },
+            'volume_indicators': {
+                'VMA': {
+                    '放量': {'condition': 'volume_ratio > 1.5', 'score': 30},
+                    '温和': {'condition': '(volume_ratio > 1.2) & (volume_ratio <= 1.5)', 'score': 10},
+                    '缩量': {'condition': 'volume_ratio <= 1.0', 'score': -30}
+                },
+                'OBV': {
+                    '健康': {'condition': '(close > close_prev) & (OBV > OBV_prev)', 'score': 5},
+                    '背离': {'condition': '(close > close_prev) & (OBV < OBV_prev)', 'score': -20}
+                }
+            },
+            'momentum_indicators': {
+                'RSI': {
+                    '强势': {'condition': 'RSI_12 > 50', 'score': 15},
+                    '弱势': {'condition': 'RSI_12 <= 50', 'score': 0},
+                    '超买': {'condition': 'RSI_12 > 70', 'score': -10},
+                    '超卖': {'condition': 'RSI_12 < 30', 'score': 5}
+                },
+                'KDJ': {
+                    '金叉': {'condition': '(K > D) & (K_prev <= D_prev)', 'score': 5},
+                    '死叉': {'condition': '(K < D) & (K_prev >= D_prev)', 'score': -5}
+                },
+                'CCI': {
+                    '强势': {'condition': 'CCI > 100', 'score': 3},
+                    '弱势': {'condition': 'CCI < -100', 'score': -3}
+                }
+            },
+            'volatility_indicators': {
+                'BOLL': {
+                    '强势': {'condition': 'close > BB_middle', 'score': 5},
+                    '弱势': {'condition': 'close <= BB_middle', 'score': -5},
+                    '突破': {'condition': '(BB_position > 0.8) & (volume_ratio > 1.5)', 'score': 2}
+                },
+                'ATR': {
+                    '高波动': {'condition': 'ATR > ATR.rolling(20).mean()', 'score': -2},
+                    '低波动': {'condition': 'ATR <= ATR.rolling(20).mean()', 'score': 1}
+                }
+            }
+        }
+        return rules
 
-# 在display函数部分添加新的板块热度展示函数
+    def evaluate_conditions(self, current_data, prev_data):
+        """评估所有条件"""
+        scores = {
+            'trend_score': 0,
+            'volume_score': 0,
+            'momentum_score': 0,
+            'volatility_score': 0,
+            'total_score': 0,
+            'signals': [],
+            'warnings': [],
+            'detailed_analysis': {}
+        }
+        
+        if current_data is None:
+            return scores
+            
+        # 准备数据
+        data = current_data.copy()
+        
+        # 确保必要的列存在
+        required_columns = ['close', 'OBV', 'K', 'D']
+        for col in required_columns:
+            if col not in data:
+                data[col] = 0
+                
+        if prev_data is not None:
+            data['close_prev'] = prev_data.get('close', 0)
+            data['OBV_prev'] = prev_data.get('OBV', 0)
+            data['K_prev'] = prev_data.get('K', 0)
+            data['D_prev'] = prev_data.get('D', 0)
+        else:
+            data['close_prev'] = data['close']
+            data['OBV_prev'] = data['OBV']
+            data['K_prev'] = data['K']
+            data['D_prev'] = data['D']
+        
+        # 趋势指标评估 (主帅级 - 50%)
+        trend_score = 0
+        trend_signals = []
+        trend_analysis = []
+        
+        # MACD评估 (元帅)
+        macd_conditions = self.decision_rules['trend_indicators']['MACD']
+        for level, config in macd_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    trend_score += config['score']
+                    trend_signals.append(f"MACD {level}信号")
+                    trend_analysis.append(f"MACD({level}): {config['condition']}")
+                    break
+            except Exception as e:
+                continue
+        
+        # 均线评估 (将军)
+        ma_conditions = self.decision_rules['trend_indicators']['MA']
+        for level, config in ma_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    trend_score += config['score']
+                    trend_signals.append(f"均线{level}")
+                    trend_analysis.append(f"MA({level}): {config['condition']}")
+            except Exception as e:
+                continue
+        
+        # SAR评估 (先锋)
+        sar_conditions = self.decision_rules['trend_indicators']['SAR']
+        for level, config in sar_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    trend_score += config['score']
+                    trend_signals.append(f"SAR{level}")
+                    trend_analysis.append(f"SAR({level}): {config['condition']}")
+            except Exception as e:
+                continue
+        
+        scores['trend_score'] = trend_score
+        scores['signals'].extend(trend_signals)
+        scores['detailed_analysis']['trend'] = trend_analysis
+        
+        # 成交量指标评估 (政委级 - 30%)
+        volume_score = 0
+        volume_signals = []
+        volume_analysis = []
+        
+        # 成交量评估
+        volume_conditions = self.decision_rules['volume_indicators']['VMA']
+        for level, config in volume_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    volume_score += config['score']
+                    volume_signals.append(f"成交量{level}")
+                    volume_analysis.append(f"Volume({level}): {config['condition']}")
+                    break
+            except Exception as e:
+                continue
+        
+        # OBV评估
+        obv_conditions = self.decision_rules['volume_indicators']['OBV']
+        for level, config in obv_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    volume_score += config['score']
+                    volume_signals.append(f"OBV{level}")
+                    volume_analysis.append(f"OBV({level}): {config['condition']}")
+                    break
+            except Exception as e:
+                continue
+        
+        scores['volume_score'] = volume_score
+        scores['signals'].extend(volume_signals)
+        scores['detailed_analysis']['volume'] = volume_analysis
+        
+        # 动量指标评估 (参谋级 - 15%)
+        momentum_score = 0
+        momentum_signals = []
+        momentum_analysis = []
+        
+        # RSI评估
+        rsi_conditions = self.decision_rules['momentum_indicators']['RSI']
+        for level, config in rsi_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    momentum_score += config['score']
+                    momentum_signals.append(f"RSI{level}")
+                    momentum_analysis.append(f"RSI({level}): {config['condition']}")
+            except Exception as e:
+                continue
+        
+        # KDJ评估
+        kdj_conditions = self.decision_rules['momentum_indicators']['KDJ']
+        for level, config in kdj_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    momentum_score += config['score']
+                    momentum_signals.append(f"KDJ{level}")
+                    momentum_analysis.append(f"KDJ({level}): {config['condition']}")
+                    break
+            except Exception as e:
+                continue
+        
+        # CCI评估
+        cci_conditions = self.decision_rules['momentum_indicators']['CCI']
+        for level, config in cci_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    momentum_score += config['score']
+                    momentum_signals.append(f"CCI{level}")
+                    momentum_analysis.append(f"CCI({level}): {config['condition']}")
+            except Exception as e:
+                continue
+        
+        scores['momentum_score'] = momentum_score
+        scores['signals'].extend(momentum_signals)
+        scores['detailed_analysis']['momentum'] = momentum_analysis
+        
+        # 波动率指标评估 (工兵级 - 5%)
+        volatility_score = 0
+        volatility_signals = []
+        volatility_analysis = []
+        
+        # 布林带评估
+        boll_conditions = self.decision_rules['volatility_indicators']['BOLL']
+        for level, config in boll_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    volatility_score += config['score']
+                    volatility_signals.append(f"布林带{level}")
+                    volatility_analysis.append(f"BOLL({level}): {config['condition']}")
+            except Exception as e:
+                continue
+        
+        # ATR评估
+        atr_conditions = self.decision_rules['volatility_indicators']['ATR']
+        for level, config in atr_conditions.items():
+            try:
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
+                    volatility_score += config['score']
+                    volatility_signals.append(f"ATR{level}")
+                    volatility_analysis.append(f"ATR({level}): {config['condition']}")
+            except Exception as e:
+                continue
+        
+        scores['volatility_score'] = volatility_score
+        scores['signals'].extend(volatility_signals)
+        scores['detailed_analysis']['volatility'] = volatility_analysis
+        
+        # 计算总分 (按照分层权重)
+        weighted_total = (
+            trend_score * 0.50 +      # 趋势指标权重50%
+            volume_score * 0.30 +     # 成交量指标权重30%
+            momentum_score * 0.15 +   # 动量指标权重15%
+            volatility_score * 0.05   # 波动率指标权重5%
+        )
+        scores['total_score'] = weighted_total
+        
+        # 生成决策建议
+        decision = self.generate_decision(scores)
+        scores['decision'] = decision
+        
+        return scores
+    
+    def generate_decision(self, scores):
+        """生成交易决策"""
+        total_score = scores['total_score']
+        
+        if total_score >= 70:
+            return "🚀 强烈买入 (仓位70%+)"
+        elif total_score >= 50:
+            return "✅ 建议买入 (仓位30-50%)"
+        elif total_score >= 30:
+            return "🤔 谨慎买入 (仓位<30%)"
+        elif total_score >= 0:
+            return "⚖️ 持有观望"
+        elif total_score >= -30:
+            return "🧐 谨慎卖出"
+        elif total_score >= -50:
+            return "❌ 建议卖出"
+        else:
+            return "🔥 强烈卖出"
+
+class RiskManagementSystem:
+    def __init__(self):
+        self.risk_levels = {
+            '保守型': {'max_position': 0.3, 'stop_loss': 0.05, 'profit_target': 0.15},
+            '稳健型': {'max_position': 0.5, 'stop_loss': 0.08, 'profit_target': 0.20},
+            '激进型': {'max_position': 0.7, 'stop_loss': 0.12, 'profit_target': 0.30}
+        }
+    
+    def calculate_position_size(self, account_value, risk_level, signal_strength):
+        """计算仓位大小"""
+        if risk_level not in self.risk_levels:
+            risk_level = '稳健型'
+            
+        base_config = self.risk_levels[risk_level]
+        max_position = base_config['max_position'] * account_value
+        
+        # 根据信号强度调整仓位
+        if signal_strength >= 80:
+            position_ratio = 1.0
+        elif signal_strength >= 60:
+            position_ratio = 0.7
+        elif signal_strength >= 40:
+            position_ratio = 0.4
+        else:
+            position_ratio = 0.2
+            
+        return max_position * position_ratio
+    
+    def calculate_stop_loss(self, current_price, risk_level, volatility=0.02):
+        """计算止损位"""
+        if risk_level not in self.risk_levels:
+            risk_level = '稳健型'
+            
+        base_stop = self.risk_levels[risk_level]['stop_loss']
+        # 根据波动率调整止损
+        volatility_adjustment = min(volatility * 2, 0.15)  # 最大不超过15%
+        stop_loss_ratio = base_stop + volatility_adjustment
+        
+        return current_price * (1 - stop_loss_ratio)
+    
+    def calculate_profit_target(self, current_price, risk_level):
+        """计算止盈位"""
+        if risk_level not in self.risk_levels:
+            risk_level = '稳健型'
+            
+        base_target = self.risk_levels[risk_level]['profit_target']
+        return current_price * (1 + base_target)
+    
+    def generate_risk_report(self, current_price, signal_strength, account_value=100000, risk_level='稳健型'):
+        """生成风险管理报告"""
+        position_size = self.calculate_position_size(account_value, risk_level, signal_strength)
+        stop_loss = self.calculate_stop_loss(current_price, risk_level)
+        profit_target = self.calculate_profit_target(current_price, risk_level)
+        
+        risk_reward_ratio = (profit_target - current_price) / (current_price - stop_loss) if current_price > stop_loss else 0
+        max_loss = position_size * (current_price - stop_loss) / current_price if current_price > 0 else 0
+        
+        return {
+            'risk_level': risk_level,
+            'position_size': position_size,
+            'stop_loss': stop_loss,
+            'profit_target': profit_target,
+            'risk_reward_ratio': risk_reward_ratio,
+            'max_loss': max_loss
+        }
+
+class MarketSentimentAnalyzer:
+    def __init__(self, analyzer):
+        self.analyzer = analyzer
+    
+    def analyze_sentiment(self, df):
+        """分析市场情绪 - 透明化计算过程"""
+        if df is None or len(df) < 20:
+            return {
+                'sentiment_score': 50, 
+                'sentiment_level': '数据不足', 
+                'signals': [],
+                'detailed_scores': {}
+            }
+            
+        sentiment_score = 50  # 从50开始，而不是0
+        signals = []
+        detailed_scores = {}
+        
+        current_data = df.iloc[-1]
+        
+        # 价格动量情绪
+        if 'MA20' in current_data and current_data['close'] > current_data['MA20']:
+            sentiment_score += 10
+            signals.append("价格在20日均线上方")
+            detailed_scores['价格在20日均线上方'] = 10
+        
+        # 成交量情绪
+        if 'volume_ratio' in current_data:
+            if current_data['volume_ratio'] > 1.5:
+                sentiment_score += 15
+                signals.append("成交量大幅放大")
+                detailed_scores['成交量大幅放大'] = 15
+            elif current_data['volume_ratio'] > 1.2:
+                sentiment_score += 10
+                signals.append("成交量温和放大")
+                detailed_scores['成交量温和放大'] = 10
+        
+        # 波动率情绪
+        if 'ATR' in df.columns and len(df) >= 20:
+            atr_ma = df['ATR'].rolling(20).mean().iloc[-1] if len(df) >= 20 else current_data['ATR']
+            if current_data['ATR'] < atr_ma:
+                sentiment_score += 5
+                signals.append("低波动环境")
+                detailed_scores['低波动环境'] = 5
+        
+        # 超买超卖情绪
+        if 'RSI_12' in current_data:
+            if current_data['RSI_12'] < 30:
+                sentiment_score += 15
+                signals.append("RSI超卖")
+                detailed_scores['RSI超卖'] = 15
+            elif current_data['RSI_12'] > 70:
+                sentiment_score -= 15
+                signals.append("RSI超买")
+                detailed_scores['RSI超买'] = -15
+        
+        # 趋势情绪
+        if 'MACD' in current_data and 'MACD_signal' in current_data:
+            if current_data['MACD'] > current_data['MACD_signal']:
+                sentiment_score += 10
+                signals.append("MACD金叉")
+                detailed_scores['MACD金叉'] = 10
+        
+        # 资金流向情绪
+        if 'MFI' in current_data:
+            if current_data['MFI'] > 80:
+                sentiment_score -= 10
+                signals.append("MFI超买")
+                detailed_scores['MFI超买'] = -10
+            elif current_data['MFI'] < 20:
+                sentiment_score += 10
+                signals.append("MFI超卖")
+                detailed_scores['MFI超卖'] = 10
+        
+        # 均线排列情绪
+        if all(col in current_data for col in ['MA20', 'MA60', 'MA120']):
+            if current_data['MA20'] > current_data['MA60'] > current_data['MA120']:
+                sentiment_score += 10
+                signals.append("多头排列")
+                detailed_scores['多头排列'] = 10
+            elif current_data['MA20'] < current_data['MA60'] < current_data['MA120']:
+                sentiment_score -= 10
+                signals.append("空头排列")
+                detailed_scores['空头排列'] = -10
+        
+        return {
+            'sentiment_score': max(0, min(100, sentiment_score)),
+            'sentiment_level': self.get_sentiment_level(sentiment_score),
+            'signals': signals,
+            'detailed_scores': detailed_scores
+        }
+    
+    def get_sentiment_level(self, score):
+        if score >= 80:
+            return "极度乐观"
+        elif score >= 70:
+            return "非常乐观"
+        elif score >= 60:
+            return "乐观"
+        elif score >= 50:
+            return "略微乐观"
+        elif score >= 40:
+            return "中性"
+        elif score >= 30:
+            return "略微悲观"
+        elif score >= 20:
+            return "悲观"
+        elif score >= 10:
+            return "非常悲观"
+        else:
+            return "极度悲观"
+
+class BacktestingEngine:
+    def __init__(self):
+        self.transaction_cost = 0.001  # 交易成本
+    
+    def get_trading_signal(self, current_data, prev_data):
+        """生成交易信号（简化版）"""
+        if prev_data is None:
+            return 'HOLD'
+            
+        # MACD信号
+        macd_bullish = current_data['MACD'] > current_data['MACD_signal'] and prev_data['MACD'] <= prev_data['MACD_signal']
+        macd_bearish = current_data['MACD'] < current_data['MACD_signal'] and prev_data['MACD'] >= prev_data['MACD_signal']
+        
+        # RSI信号
+        rsi_oversold = current_data['RSI_12'] < 30
+        rsi_overbought = current_data['RSI_12'] > 70
+        
+        if macd_bullish and rsi_oversold:
+            return 'BUY'
+        elif macd_bearish and rsi_overbought:
+            return 'SELL'
+        else:
+            return 'HOLD'
+    
+    def run_backtest(self, df, initial_capital=100000):
+        """运行回测"""
+        if df is None or len(df) < 10:
+            return {'error': '数据不足进行回测，至少需要10个交易日数据'}
+            
+        capital = initial_capital
+        position = 0
+        trades = []
+        portfolio_values = []
+        
+        for i in range(1, len(df)):
+            current_data = df.iloc[i]
+            prev_data = df.iloc[i-1]
+            
+            # 获取交易信号
+            signal = self.get_trading_signal(current_data, prev_data)
+            
+            if signal == 'BUY' and position == 0 and capital > 0:
+                # 买入
+                shares = capital * 0.5 / current_data['close']  # 使用50%资金
+                position = shares
+                cost = shares * current_data['close'] * (1 + self.transaction_cost)
+                capital -= cost
+                trades.append({
+                    'date': current_data.name,
+                    'action': 'BUY',
+                    'price': current_data['close'],
+                    'shares': shares,
+                    'cost': cost
+                })
+            
+            elif signal == 'SELL' and position > 0:
+                # 卖出
+                revenue = position * current_data['close'] * (1 - self.transaction_cost)
+                capital += revenue
+                trades.append({
+                    'date': current_data.name,
+                    'action': 'SELL',
+                    'price': current_data['close'],
+                    'shares': position,
+                    'revenue': revenue
+                })
+                position = 0
+            
+            # 记录组合价值
+            portfolio_value = capital + (position * current_data['close'] if position > 0 else 0)
+            portfolio_values.append(portfolio_value)
+        
+        # 计算最终收益
+        final_value = capital + (position * df['close'].iloc[-1] if position > 0 else 0)
+        total_return = (final_value - initial_capital) / initial_capital
+        
+        return {
+            'final_value': final_value,
+            'total_return': total_return,
+            'trades': trades,
+            'portfolio_values': portfolio_values,
+            'max_drawdown': self.calculate_max_drawdown(portfolio_values) if portfolio_values else 0
+        }
+    
+    def calculate_max_drawdown(self, portfolio_values):
+        """计算最大回撤"""
+        if not portfolio_values:
+            return 0
+            
+        peak = portfolio_values[0]
+        max_dd = 0
+        
+        for value in portfolio_values:
+            if value > peak:
+                peak = value
+            dd = (peak - value) / peak
+            if dd > max_dd:
+                max_dd = dd
+                
+        return max_dd
+
+# 其他显示函数保持不变...
+# (display_price_charts, display_technical_indicators_table, display_decision_analysis, 
+# display_indicator_details, display_data_quality_report, display_risk_management_report, 
+# display_market_sentiment, display_backtest_results, display_sector_heatmap, display_sector_analysis)
+
+def display_price_charts(df, stock_name):
+    """显示价格走势图表（包含MACD）"""
+    if df is None or len(df) == 0:
+        st.warning("无数据可显示图表")
+        return
+        
+    st.subheader(f"{stock_name} - 价格走势与技术指标")
+    
+    # 使用plotly创建交互式图表
+    fig = make_subplots(rows=3, cols=1, 
+                       shared_xaxes=True,
+                       vertical_spacing=0.05,
+                       subplot_titles=('K线图与均线系统', 'MACD指标', '成交量'),
+                       row_heights=[0.5, 0.25, 0.25])
+    
+    # K线图
+    fig.add_trace(go.Candlestick(x=df.index,
+                                open=df['open'],
+                                high=df['high'],
+                                low=df['low'],
+                                close=df['close'],
+                                name='K线'), row=1, col=1)
+    
+    # 均线
+    if 'MA5' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA5'], 
+                               line=dict(color='yellow', width=1), name='MA5'), row=1, col=1)
+    if 'MA20' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA20'], 
+                               line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
+    if 'MA60' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA60'], 
+                               line=dict(color='red', width=1.5), name='MA60'), row=1, col=1)
+    if 'MA120' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA120'], 
+                               line=dict(color='purple', width=2), name='MA120'), row=1, col=1)
+    
+    # 布林带
+    if 'BB_upper' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], 
+                               line=dict(color='gray', width=1, dash='dash'), 
+                               name='布林带上轨', showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], 
+                               line=dict(color='gray', width=1, dash='dash'),
+                               name='布林带下轨', showlegend=False), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_middle'], 
+                               line=dict(color='blue', width=1),
+                               name='布林带中轨', showlegend=False), row=1, col=1)
+    
+    # MACD指标
+    if 'MACD' in df.columns:
+        # MACD线
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD'],
+                               line=dict(color='blue', width=1.5), name='MACD'), row=2, col=1)
+        # 信号线
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_signal'],
+                               line=dict(color='red', width=1.5), name='MACD Signal'), row=2, col=1)
+        # 柱状图
+        colors = ['green' if x >= 0 else 'red' for x in df['MACD_hist']]
+        fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'],
+                           name='MACD Hist', marker_color=colors), row=2, col=1)
+        # 零轴线
+        fig.add_hline(y=0, line_dash="dash", line_color="black", row=2, col=1)
+    
+    # 成交量
+    colors = ['red' if row['close'] >= row['open'] else 'green' for _, row in df.iterrows()]
+    fig.add_trace(go.Bar(x=df.index, y=df['vol'], 
+                        name='成交量', marker_color=colors), row=3, col=1)
+    
+    # 成交量均线
+    if 'VMA5' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['VMA5'], 
+                               line=dict(color='blue', width=1), name='VMA5'), row=3, col=1)
+    
+    fig.update_layout(height=800, showlegend=True, 
+                     xaxis_rangeslider_visible=False)
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+def display_mini_price_chart(df_period, stock_name):
+    """显示迷你版价格走势图"""
+    if df_period is None or len(df_period) == 0:
+        return
+        
+    fig = make_subplots(rows=2, cols=1, 
+                       shared_xaxes=True,
+                       vertical_spacing=0.05,
+                       subplot_titles=('K线图', '成交量'),
+                       row_heights=[0.7, 0.3])
+    
+    # K线图
+    fig.add_trace(go.Candlestick(x=df_period.index,
+                                open=df_period['open'],
+                                high=df_period['high'],
+                                low=df_period['low'],
+                                close=df_period['close'],
+                                name='K线'), row=1, col=1)
+    
+    # 均线
+    if 'MA5' in df_period.columns:
+        fig.add_trace(go.Scatter(x=df_period.index, y=df_period['MA5'], 
+                               line=dict(color='yellow', width=1), name='MA5'), row=1, col=1)
+    if 'MA20' in df_period.columns:
+        fig.add_trace(go.Scatter(x=df_period.index, y=df_period['MA20'], 
+                               line=dict(color='orange', width=1), name='MA20'), row=1, col=1)
+    
+    # 成交量
+    colors = ['red' if row['close'] >= row['open'] else 'green' for _, row in df_period.iterrows()]
+    fig.add_trace(go.Bar(x=df_period.index, y=df_period['vol'], 
+                        name='成交量', marker_color=colors), row=2, col=1)
+    
+    fig.update_layout(height=400, showlegend=False, 
+                     xaxis_rangeslider_visible=False,
+                     margin=dict(l=20, r=20, t=40, b=20))
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+def get_indicator_status(value, indicator_type, comparison_value=None):
+    """获取指标状态和颜色"""
+    if indicator_type == 'MACD':
+        if value > 0:
+            return "🟢", "positive"
+        else:
+            return "🔴", "negative"
+    
+    elif indicator_type == 'MACD_hist':
+        if value > 0:
+            return "🟢", "positive"
+        else:
+            return "🔴", "negative"
+    
+    elif indicator_type == 'MACD_signal':
+        if value > 0:
+            return "🟢", "positive"
+        else:
+            return "🔴", "negative"
+    
+    elif indicator_type == 'RSI':
+        if value > 70:
+            return "🔴", "overbought"
+        elif value < 30:
+            return "🟢", "oversold"
+        else:
+            return "🟡", "neutral"
+    
+    elif indicator_type == 'KDJ':
+        if value > 80:
+            return "🔴", "overbought"
+        elif value < 20:
+            return "🟢", "oversold"
+        else:
+            return "🟡", "neutral"
+    
+    elif indicator_type == 'volume_ratio':
+        if value > 1.5:
+            return "🟢", "high"
+        elif value > 1.0:
+            return "🟡", "medium"
+        else:
+            return "🔴", "low"
+    
+    elif indicator_type == 'BB_position':
+        if value > 0.8:
+            return "🔴", "upper"
+        elif value < 0.2:
+            return "🟢", "lower"
+        else:
+            return "🟡", "middle"
+    
+    elif indicator_type == 'CCI':
+        if value > 100:
+            return "🟢", "strong"
+        elif value < -100:
+            return "🔴", "weak"
+        else:
+            return "🟡", "neutral"
+    
+    elif indicator_type == 'MA_relation':
+        if comparison_value is not None:
+            if value > comparison_value:
+                return "🟢", "above"
+            else:
+                return "🔴", "below"
+        return "⚪", "unknown"
+    
+    else:
+        return "⚪", "unknown"
+
+def display_technical_indicators_table(df):
+    """显示技术指标表格 - 使用Streamlit原生DataFrame样式"""
+    if df is None or len(df) == 0:
+        st.warning("无数据可显示技术指标")
+        return
+        
+    st.subheader("📊 技术指标详细分析")
+    
+    # 获取最近22个交易日的数据（一个月）
+    recent_data = df.tail(min(22, len(df))).copy()
+    
+    # 显示迷你价格走势图
+    st.write("### 当前分析时间段价格走势")
+    display_mini_price_chart(recent_data, "当前分析")
+    
+    # 定义指标分组和显示格式
+    indicator_configs = {
+        'MACD': {'column': 'MACD', 'format': '.4f', 'type': 'MACD'},
+        'MACD信号': {'column': 'MACD_signal', 'format': '.4f', 'type': 'MACD_signal'},
+        'MACD柱状图': {'column': 'MACD_hist', 'format': '.4f', 'type': 'MACD_hist'},
+        'MA5': {'column': 'MA5', 'format': '.2f', 'type': 'MA_relation', 'compare_with': 'close'},
+        'MA20': {'column': 'MA20', 'format': '.2f', 'type': 'MA_relation', 'compare_with': 'close'},
+        'MA60': {'column': 'MA60', 'format': '.2f', 'type': 'MA_relation', 'compare_with': 'close'},
+        'MA120': {'column': 'MA120', 'format': '.2f', 'type': 'MA_relation', 'compare_with': 'close'},
+        '成交量': {'column': 'vol', 'format': '.0f', 'type': 'volume_ratio'},
+        '成交量比': {'column': 'volume_ratio', 'format': '.2f', 'type': 'volume_ratio'},
+        'OBV': {'column': 'OBV', 'format': '.0f', 'type': 'volume_ratio'},
+        'RSI_6': {'column': 'RSI_6', 'format': '.1f', 'type': 'RSI'},
+        'RSI_12': {'column': 'RSI_12', 'format': '.1f', 'type': 'RSI'},
+        'RSI_24': {'column': 'RSI_24', 'format': '.1f', 'type': 'RSI'},
+        'K值': {'column': 'K', 'format': '.1f', 'type': 'KDJ'},
+        'D值': {'column': 'D', 'format': '.1f', 'type': 'KDJ'},
+        'J值': {'column': 'J', 'format': '.1f', 'type': 'KDJ'},
+        '布林上轨': {'column': 'BB_upper', 'format': '.2f', 'type': 'BB_position'},
+        '布林中轨': {'column': 'BB_middle', 'format': '.2f', 'type': 'BB_position'},
+        '布林下轨': {'column': 'BB_lower', 'format': '.2f', 'type': 'BB_position'},
+        'ATR': {'column': 'ATR', 'format': '.3f', 'type': 'volume_ratio'},
+        'CCI': {'column': 'CCI', 'format': '.1f', 'type': 'CCI'},
+        '威廉指标': {'column': 'WR', 'format': '.1f', 'type': 'RSI'},
+        '+DI': {'column': '+DI', 'format': '.1f', 'type': 'RSI'},
+        '-DI': {'column': '-DI', 'format': '.1f', 'type': 'RSI'},
+        'ADX': {'column': 'ADX', 'format': '.1f', 'type': 'RSI'},
+        'MFI': {'column': 'MFI', 'format': '.1f', 'type': 'RSI'},
+    }
+    
+    # 使用折叠面板让用户选择要显示的指标
+    with st.expander("🔧 选择显示指标", expanded=False):
+        st.write("选择要显示的技术指标:")
+        
+        # 使用多列布局
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # 初始化session state
+        if 'selected_indicators' not in st.session_state:
+            st.session_state.selected_indicators = {
+                'MACD': True, 'MACD信号': True, 'MACD柱状图': True,
+                'MA5': True, 'MA20': True, 'MA60': True, 'MA120': True,
+                '成交量': True, '成交量比': True, 'OBV': True,
+                'RSI_6': True, 'RSI_12': True, 'RSI_24': True,
+                'K值': True, 'D值': True, 'J值': True,
+                '布林上轨': True, '布林中轨': True, '布林下轨': True,
+                'ATR': True, 'CCI': True, '威廉指标': True,
+                '+DI': True, '-DI': True, 'ADX': True, 'MFI': True
+            }
+        
+        with col1:
+            st.write("**趋势指标 (主帅)**")
+            for indicator in ['MACD', 'MACD信号', 'MACD柱状图', 'MA5', 'MA20']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
+        
+        with col2:
+            st.write("**趋势指标 (主帅)**")
+            for indicator in ['MA60', 'MA120']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
+            
+            st.write("**成交量指标 (政委)**")
+            for indicator in ['成交量', '成交量比', 'OBV']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
+        
+        with col3:
+            st.write("**动量指标 (参谋)**")
+            for indicator in ['RSI_6', 'RSI_12', 'RSI_24', 'K值', 'D值']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
+        
+        with col4:
+            st.write("**动量指标 (参谋)**")
+            for indicator in ['J值', 'CCI', '威廉指标']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
+            
+            st.write("**波动率指标 (工兵)**")
+            for indicator in ['布林上轨', '布林中轨', '布林下轨', 'ATR', '+DI', '-DI', 'ADX', 'MFI']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
+    
+    # 根据用户选择过滤指标
+    selected_indicators = {}
+    for indicator_name, config in indicator_configs.items():
+        if st.session_state.selected_indicators.get(indicator_name, False) and config['column'] in recent_data.columns:
+            selected_indicators[indicator_name] = config
+    
+    if not selected_indicators:
+        st.warning("请至少选择一个指标")
+        return
+    
+    # 创建表格数据 - 真正的横向日期排列
+    table_data = []
+    
+    # 为每个选中的指标添加行
+    for indicator_name, config in selected_indicators.items():
+        if config['column'] not in recent_data.columns:
+            continue
+            
+        row_data = {'指标': indicator_name}
+        
+        for date in recent_data.index:
+            value = recent_data.loc[date, config['column']]
+            
+            # 格式化数值
+            try:
+                formatted_value = format(value, config['format'])
+            except:
+                formatted_value = str(value)
+            
+            # 获取状态和颜色
+            try:
+                if config['type'] == 'MA_relation' and 'compare_with' in config:
+                    compare_value = recent_data.loc[date, config['compare_with']]
+                    status_emoji, status_type = get_indicator_status(value, config['type'], compare_value)
+                else:
+                    status_emoji, status_type = get_indicator_status(value, config['type'])
+            except:
+                status_emoji, status_type = "⚪", "unknown"
+            
+            # 添加数值和状态 - 使用日期作为列名
+            date_str = date.strftime('%m-%d')
+            row_data[f'{date_str} 数值'] = formatted_value
+            row_data[f'{date_str} 状态'] = status_emoji
+        
+        table_data.append(row_data)
+    
+    # 创建DataFrame并显示
+    if table_data:
+        display_df = pd.DataFrame(table_data)
+        
+        # 使用Streamlit原生DataFrame显示，保持Excel样式
+        st.dataframe(display_df, use_container_width=True, height=min(600, len(selected_indicators) * 35 + 100))
+        
+        # 显示颜色说明
+        st.write("**颜色说明**: 🟢 积极信号 | 🔴 消极信号 | 🟡 中性信号 | ⚪ 未知状态")
+    else:
+        st.info("无可用指标数据")
+
+def display_decision_analysis(df):
+    """显示决策分析"""
+    if df is None or len(df) < 2:
+        st.warning("数据不足进行决策分析")
+        return
+        
+    st.subheader("🤖 多指标决策分析")
+    
+    # 初始化决策引擎
+    decision_engine = TradingDecisionEngine()
+    
+    # 获取最新数据
+    current_data = df.iloc[-1] if len(df) > 0 else None
+    prev_data = df.iloc[-2] if len(df) > 1 else None
+    
+    # 评估当前状态
+    scores = decision_engine.evaluate_conditions(current_data, prev_data)
+    
+    # 显示决策结果
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("最终决策", scores['decision'])
+    
+    with col2:
+        st.metric("综合得分", f"{scores['total_score']:.1f}分")
+    
+    with col3:
+        st.metric("趋势得分", f"{scores['trend_score']}分")
+    
+    with col4:
+        st.metric("量能得分", f"{scores['volume_score']}分")
+    
+    # 显示详细得分
+    st.write("#### 📊 分层指挥体系得分详情")
+    
+    score_data = {
+        '指标类别': ['趋势指标 (主帅)', '成交量指标 (政委)', '动量指标 (参谋)', '波动率指标 (工兵)'],
+        '得分': [scores['trend_score'], scores['volume_score'], 
+                scores['momentum_score'], scores['volatility_score']],
+        '权重': ['50%', '30%', '15%', '5%'],
+        '加权得分': [
+            f"{scores['trend_score'] * 0.50:.1f}",
+            f"{scores['volume_score'] * 0.30:.1f}", 
+            f"{scores['momentum_score'] * 0.15:.1f}",
+            f"{scores['volatility_score'] * 0.05:.1f}"
+        ]
+    }
+    
+    score_df = pd.DataFrame(score_data)
+    st.dataframe(score_df, use_container_width=True)
+    
+    # 显示信号列表
+    st.write("#### 📈 技术信号")
+    
+    if scores['signals']:
+        for signal in scores['signals']:
+            st.write(f"- {signal}")
+    else:
+        st.write("暂无明确技术信号")
+    
+    # 显示详细分析
+    with st.expander("🔍 详细指标分析"):
+        for category, analyses in scores['detailed_analysis'].items():
+            if analyses:
+                st.write(f"**{category.upper()}指标分析:**")
+                for analysis in analyses:
+                    st.write(f"- {analysis}")
+
+def display_indicator_details(df):
+    """显示指标详细分析 - 按照分层指挥体系"""
+    if df is None or len(df) == 0:
+        st.warning("数据不足显示指标详情")
+        return
+        
+    st.subheader("🎯 分层指挥体系指标详解")
+    
+    # 获取最新数据
+    current_data = df.iloc[-1] if len(df) > 0 else None
+    prev_data = df.iloc[-2] if len(df) > 1 else current_data
+    
+    if current_data is None:
+        st.warning("无法获取当前数据")
+        return
+    
+    # 趋势指标分析 (主帅级)
+    st.write("### 🎖️ 趋势指标分析 (主帅级 - 定方向)")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("#### MACD (元帅)")
+        if all(col in current_data for col in ['MACD', 'MACD_signal', 'MACD_slope', 'DEA_slope']):
+            # MACD状态分析
+            macd_status = "金叉" if current_data['MACD'] > current_data['MACD_signal'] else "死叉"
+            macd_position = "0轴上方" if current_data['MACD'] > 0 else "0轴下方"
+            macd_slope_status = "向上" if current_data['MACD_slope'] > 0 else "向下"
+            dea_slope_status = "向上" if current_data['DEA_slope'] > 0 else "向下"
+            
+            st.write(f"- **状态**: {macd_status} | {macd_position}")
+            st.write(f"- **MACD值**: {current_data['MACD']:.4f}")
+            st.write(f"- **信号线**: {current_data['MACD_signal']:.4f}")
+            st.write(f"- **柱状图**: {current_data['MACD_hist']:.4f}")
+            st.write(f"- **MACD斜率**: {macd_slope_status}")
+            st.write(f"- **DEA斜率**: {dea_slope_status}")
+            
+            # MACD信号分级
+            if (current_data['MACD'] > 0 and 
+                current_data['MACD'] > current_data['MACD_signal'] and 
+                current_data['MACD_slope'] > 0 and 
+                current_data['DEA_slope'] > 0):
+                st.success("**S级信号**: 0轴上方金叉 + DEA斜率>0 → 满仓信号")
+            elif (current_data['MACD'] < 0 and 
+                  current_data['MACD'] > current_data['MACD_signal'] and 
+                  current_data['MACD_hist'] > 0):
+                st.info("**A级信号**: 0轴下方金叉但红柱持续放大 → 试仓信号")
+            elif (current_data['MACD'] > 0 and 
+                  current_data['MACD'] < current_data['MACD_signal']):
+                st.warning("**B级信号**: 死叉但未破0轴 → 减仓")
+            elif (current_data['MACD'] < 0 and 
+                  current_data['MACD'] < current_data['MACD_signal'] and 
+                  current_data['MACD_hist'] < 0):
+                st.error("**C级信号**: 0轴下方死叉 + 绿柱放大 → 空仓")
+        else:
+            st.warning("MACD数据不足")
+    
+    with col2:
+        st.write("#### 均线系统 (将军)")
+        if all(col in current_data for col in ['MA20', 'MA60', 'MA120', 'MA60_direction']):
+            # 均线排列分析
+            ma20_60 = current_data['MA20'] > current_data['MA60']
+            ma60_120 = current_data['MA60'] > current_data['MA120']
+            ma60_direction = "向上" if current_data['MA60_direction'] > 0 else "向下"
+            
+            if ma20_60 and ma60_120 and current_data['MA60_direction'] > 0:
+                st.success("**多头排列**: MA20>MA60>MA120 + MA60向上")
+                st.write("- **策略**: 任何回踩都是买点")
+            elif not ma20_60 and not ma60_120 and current_data['MA60_direction'] < 0:
+                st.error("**空头排列**: MA20<MA60<MA120 + MA60向下")
+                st.write("- **策略**: 反弹减仓")
+            else:
+                st.warning("**纠结状态**: 均线方向不明")
+                st.write("- **策略**: 观望等待方向")
+            
+            st.write(f"- **MA20**: {current_data['MA20']:.2f}")
+            st.write(f"- **MA60**: {current_data['MA60']:.2f} ({ma60_direction})")
+            st.write(f"- **MA120**: {current_data['MA120']:.2f}")
+            
+            # 均线金叉分析
+            if (current_data['MA60'] > current_data['MA60_direction'] and 
+                current_data['MA20'] > current_data['MA60']):
+                st.info("**MA60上穿MA120金叉**: 牛熊转换信号")
+        else:
+            st.warning("均线数据不足")
+
+def display_data_quality_report(df, analyzer):
+    """显示数据质量报告"""
+    st.subheader("🔍 数据质量检查报告")
+    
+    quality_report = analyzer.data_quality_check(df)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.metric("数据质量评分", f"{quality_report['data_quality_score']}/100")
+    
+    with col2:
+        status = "✅ 良好" if not quality_report['has_issues'] else "⚠️ 存在问题"
+        st.metric("数据状态", status)
+    
+    if quality_report['has_issues']:
+        st.warning("发现以下数据质量问题:")
+        for issue in quality_report['issues']:
+            st.write(f"- {issue}")
+        
+        st.info("""
+        **说明:**
+        - 技术指标的前N个值为NaN是正常的，因为需要计算周期
+        - 重点关注原始数据(开盘、收盘、高低价、成交量)的缺失
+        - 数据断点可能影响长期指标的准确性
+        """)
+    else:
+        st.success("数据质量良好，无重大问题")
+    
+    # 显示基本统计信息
+    if df is not None and len(df) > 0:
+        st.write("#### 数据统计信息")
+        stats_df = pd.DataFrame({
+            '统计项': ['数据期间', '交易日数量', '最新价格', '价格变化率', '平均成交量'],
+            '数值': [
+                f"{df.index.min().strftime('%Y-%m-%d')} 至 {df.index.max().strftime('%Y-%m-%d')}",
+                len(df),
+                f"{df['close'].iloc[-1]:.2f}",
+                f"{((df['close'].iloc[-1] - df['close'].iloc[0]) / df['close'].iloc[0] * 100):.2f}%" if df['close'].iloc[0] > 0 else "N/A",
+                f"{df['vol'].mean():.0f}"
+            ]
+        })
+        st.dataframe(stats_df, use_container_width=True)
+
+def display_risk_management_report(df, signal_strength):
+    """显示风险管理报告"""
+    if df is None or len(df) == 0:
+        st.warning("数据不足进行风险管理分析")
+        return
+        
+    st.subheader("🛡️ 风险管理报告")
+    
+    risk_manager = RiskManagementSystem()
+    current_price = df['close'].iloc[-1]
+    
+    # 风险偏好选择
+    risk_level = st.selectbox(
+        "选择风险偏好",
+        ['保守型', '稳健型', '激进型'],
+        index=1
+    )
+    
+    account_value = st.number_input(
+        "账户资金 (元)",
+        min_value=10000,
+        max_value=10000000,
+        value=100000,
+        step=10000
+    )
+    
+    risk_report = risk_manager.generate_risk_report(
+        current_price, signal_strength, account_value, risk_level
+    )
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("风险等级", risk_report['risk_level'])
+    
+    with col2:
+        st.metric("建议仓位", f"¥{risk_report['position_size']:,.0f}")
+    
+    with col3:
+        st.metric("止损位", f"¥{risk_report['stop_loss']:.2f}")
+    
+    with col4:
+        st.metric("止盈位", f"¥{risk_report['profit_target']:.2f}")
+    
+    # 风险收益比
+    st.write("#### 风险收益分析")
+    risk_reward_data = {
+        '指标': ['风险收益比', '最大潜在亏损', '盈亏平衡点', '安全边际'],
+        '数值': [
+            f"{risk_report['risk_reward_ratio']:.2f}:1",
+            f"¥{risk_report['max_loss']:,.0f}",
+            f"¥{(risk_report['stop_loss'] + (risk_report['profit_target'] - risk_report['stop_loss']) / 2):.2f}",
+            f"{((current_price - risk_report['stop_loss']) / current_price * 100):.1f}%" if current_price > 0 else "N/A"
+        ]
+    }
+    st.dataframe(pd.DataFrame(risk_reward_data), use_container_width=True)
+
+def display_market_sentiment(df, analyzer):
+    """显示市场情绪分析 - 透明化计算过程"""
+    if df is None or len(df) == 0:
+        st.warning("数据不足进行情绪分析")
+        return
+        
+    st.subheader("😊 市场情绪分析")
+    
+    sentiment_analyzer = MarketSentimentAnalyzer(analyzer)
+    sentiment = sentiment_analyzer.analyze_sentiment(df)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # 情绪仪表盘
+        sentiment_score = sentiment['sentiment_score']
+        sentiment_gauge = go.Figure(go.Indicator(
+            mode = "gauge+number",
+            value = sentiment_score,
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': "市场情绪指数"},
+            gauge = {
+                'axis': {'range': [None, 100]},
+                'bar': {'color': "darkblue"},
+                'steps': [
+                    {'range': [0, 20], 'color': "lightgray"},
+                    {'range': [20, 40], 'color': "gray"},
+                    {'range': [40, 60], 'color': "yellow"},
+                    {'range': [60, 80], 'color': "lightgreen"},
+                    {'range': [80, 100], 'color': "green"}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 90
+                }
+            }
+        ))
+        sentiment_gauge.update_layout(height=300)
+        st.plotly_chart(sentiment_gauge, use_container_width=True)
+    
+    with col2:
+        st.metric("情绪级别", sentiment['sentiment_level'])
+        st.metric("情绪分数", f"{sentiment_score}/100")
+        
+        st.write("#### 情绪信号")
+        if sentiment['signals']:
+            for signal in sentiment['signals']:
+                st.write(f"- {signal}")
+        else:
+            st.write("暂无明确情绪信号")
+    
+    # 显示详细得分构成
+    st.write("#### 🎯 情绪分数构成")
+    
+    if sentiment['detailed_scores']:
+        score_data = []
+        base_score = 50
+        
+        score_data.append({
+            '项目': '基础分数',
+            '得分': base_score,
+            '说明': '情绪分析的起始基准分'
+        })
+        
+        for signal, score in sentiment['detailed_scores'].items():
+            score_data.append({
+                '项目': signal,
+                '得分': score,
+                '说明': f"该信号{'增加' if score > 0 else '减少'}了情绪分数"
+            })
+        
+        score_df = pd.DataFrame(score_data)
+        st.dataframe(score_df, use_container_width=True)
+        
+        # 显示计算过程
+        st.write("#### 🧮 情绪计算逻辑")
+        st.write(f"**计算公式**: 基础分({base_score}) + 各信号得分总和 = 最终情绪分数({sentiment_score})")
+        st.write("""
+        **评分标准说明**:
+        - 价格在20日均线上方: +10分 (技术面强势)
+        - 成交量大幅放大(>1.5倍): +15分 (资金关注度高)
+        - 成交量温和放大(1.2-1.5倍): +10分 (资金关注度中等)
+        - 低波动环境: +5分 (市场稳定)
+        - RSI超卖(<30): +15分 (超卖反弹概率大)
+        - RSI超买(>70): -15分 (超买回调风险)
+        - MACD金叉: +10分 (趋势转强)
+        - MFI超卖(<20): +10分 (资金流出过度)
+        - MFI超买(>80): -10分 (资金流入过热)
+        - 多头排列: +10分 (趋势明确向上)
+        - 空头排列: -10分 (趋势明确向下)
+        """)
+
+def display_backtest_results(df):
+    """显示回测结果"""
+    if df is None or len(df) < 10:
+        st.warning("数据不足进行回测分析，至少需要10个交易日数据")
+        return
+        
+    st.subheader("📊 策略回测分析")
+    
+    backtester = BacktestingEngine()
+    results = backtester.run_backtest(df)
+    
+    if 'error' in results:
+        st.error(results['error'])
+        return
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        color = "green" if results['total_return'] > 0 else "red"
+        st.metric("总收益率", f"{results['total_return']*100:.2f}%", delta=f"{results['total_return']*100:.2f}%")
+    
+    with col2:
+        st.metric("最终资金", f"¥{results['final_value']:,.0f}")
+    
+    with col3:
+        st.metric("交易次数", len(results['trades']))
+    
+    with col4:
+        st.metric("最大回撤", f"{results['max_drawdown']*100:.2f}%")
+    
+    # 显示收益曲线
+    if results['portfolio_values']:
+        st.write("#### 资金曲线")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df.index[1:1+len(results['portfolio_values'])],
+            y=results['portfolio_values'],
+            mode='lines',
+            name='组合价值',
+            line=dict(color='green' if results['total_return'] > 0 else 'red', width=2)
+        ))
+        fig.update_layout(
+            title="回测资金曲线",
+            xaxis_title="日期",
+            yaxis_title="组合价值 (元)",
+            height=400
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # 显示交易记录
+    st.write("#### 交易记录")
+    if results['trades']:
+        trades_df = pd.DataFrame(results['trades'])
+        st.dataframe(trades_df, use_container_width=True)
+    else:
+        st.info("回测期间无交易信号")
+
 def display_sector_heatmap(analyzer):
     """显示板块资金热度图"""
     st.subheader("🔥 A股板块资金热度图")
@@ -598,8 +1944,6 @@ def display_sector_analysis(analyzer):
     st.write(f"---")
     st.caption(f"数据更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     st.caption("数据来源: Tushare | 分析周期: 最近30个交易日")
-
-# ... 其他display函数保持不变 (display_price_charts, display_technical_indicators_table, display_decision_analysis, display_indicator_details, display_data_quality_report, display_risk_management_report, display_market_sentiment, display_backtest_results) ...
 
 def main():
     st.title("🎖️ 股票多指标决策系统")
