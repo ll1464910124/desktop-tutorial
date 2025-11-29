@@ -34,6 +34,8 @@ class AdvancedTradingDecisionSystem:
         """获取股票数据"""
         try:
             df = self.pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            if df is None or df.empty:
+                return None
             df = df.sort_values('trade_date')
             df['trade_date'] = pd.to_datetime(df['trade_date'])
             df.set_index('trade_date', inplace=True)
@@ -120,14 +122,7 @@ class AdvancedTradingDecisionSystem:
         df['volume_ratio'] = df['vol'] / df['VMA5']
         
         # 计算OBV
-        df['OBV'] = 0
-        for i in range(1, len(df)):
-            if df['close'].iloc[i] > df['close'].iloc[i-1]:
-                df['OBV'].iloc[i] = df['OBV'].iloc[i-1] + df['vol'].iloc[i]
-            elif df['close'].iloc[i] < df['close'].iloc[i-1]:
-                df['OBV'].iloc[i] = df['OBV'].iloc[i-1] - df['vol'].iloc[i]
-            else:
-                df['OBV'].iloc[i] = df['OBV'].iloc[i-1]
+        df['OBV'] = (np.sign(df['close'].diff()) * df['vol']).fillna(0).cumsum()
                 
         # 计算OBV趋势
         df['OBV_trend'] = df['OBV'].diff()
@@ -258,6 +253,9 @@ class AdvancedTradingDecisionSystem:
 
     def calculate_all_indicators(self, df):
         """计算所有技术指标"""
+        if df is None or len(df) < 60:
+            return df
+            
         df = self.calculate_macd(df)
         df = self.calculate_ma_system(df)
         df = self.calculate_rsi(df)
@@ -268,10 +266,19 @@ class AdvancedTradingDecisionSystem:
         df = self.calculate_cci(df)
         df = self.calculate_sar(df)
         df = self.calculate_additional_indicators(df)
-        return df.dropna()
+        
+        # 只删除全是NaN的行，保留部分有数据的行
+        return df
 
     def data_quality_check(self, df):
         """数据质量检查"""
+        if df is None or len(df) == 0:
+            return {
+                'has_issues': True,
+                'issues': ['数据为空或无效'],
+                'data_quality_score': 0
+            }
+            
         issues = []
         
         # 检查缺失值
@@ -312,6 +319,9 @@ class RiskManagementSystem:
     
     def calculate_position_size(self, account_value, risk_level, signal_strength):
         """计算仓位大小"""
+        if risk_level not in self.risk_levels:
+            risk_level = '稳健型'
+            
         base_config = self.risk_levels[risk_level]
         max_position = base_config['max_position'] * account_value
         
@@ -327,8 +337,11 @@ class RiskManagementSystem:
             
         return max_position * position_ratio
     
-    def calculate_stop_loss(self, current_price, risk_level, volatility):
+    def calculate_stop_loss(self, current_price, risk_level, volatility=0.02):
         """计算止损位"""
+        if risk_level not in self.risk_levels:
+            risk_level = '稳健型'
+            
         base_stop = self.risk_levels[risk_level]['stop_loss']
         # 根据波动率调整止损
         volatility_adjustment = min(volatility * 2, 0.15)  # 最大不超过15%
@@ -338,22 +351,28 @@ class RiskManagementSystem:
     
     def calculate_profit_target(self, current_price, risk_level):
         """计算止盈位"""
+        if risk_level not in self.risk_levels:
+            risk_level = '稳健型'
+            
         base_target = self.risk_levels[risk_level]['profit_target']
         return current_price * (1 + base_target)
     
     def generate_risk_report(self, current_price, signal_strength, account_value=100000, risk_level='稳健型'):
         """生成风险管理报告"""
         position_size = self.calculate_position_size(account_value, risk_level, signal_strength)
-        stop_loss = self.calculate_stop_loss(current_price, risk_level, 0.02)  # 假设波动率2%
+        stop_loss = self.calculate_stop_loss(current_price, risk_level)
         profit_target = self.calculate_profit_target(current_price, risk_level)
+        
+        risk_reward_ratio = (profit_target - current_price) / (current_price - stop_loss) if current_price > stop_loss else 0
+        max_loss = position_size * (current_price - stop_loss) / current_price if current_price > 0 else 0
         
         return {
             'risk_level': risk_level,
             'position_size': position_size,
             'stop_loss': stop_loss,
             'profit_target': profit_target,
-            'risk_reward_ratio': (profit_target - current_price) / (current_price - stop_loss),
-            'max_loss': position_size * (current_price - stop_loss) / current_price
+            'risk_reward_ratio': risk_reward_ratio,
+            'max_loss': max_loss
         }
 
 class MarketSentimentAnalyzer:
@@ -362,66 +381,69 @@ class MarketSentimentAnalyzer:
     
     def analyze_sentiment(self, df):
         """分析市场情绪"""
-        if len(df) < 20:
+        if df is None or len(df) < 20:
             return {'sentiment_score': 50, 'sentiment_level': '数据不足', 'signals': []}
             
-        sentiment_score = 0
+        sentiment_score = 50  # 从50开始，而不是0
         signals = []
         
         current_data = df.iloc[-1]
         
         # 价格动量情绪
-        if current_data['close'] > current_data['MA20']:
-            sentiment_score += 20
+        if 'MA20' in current_data and current_data['close'] > current_data['MA20']:
+            sentiment_score += 10
             signals.append("价格在20日均线上方")
         
         # 成交量情绪
-        if current_data['volume_ratio'] > 1.2:
-            sentiment_score += 15
+        if 'volume_ratio' in current_data and current_data['volume_ratio'] > 1.2:
+            sentiment_score += 10
             signals.append("成交量放大")
         
         # 波动率情绪
         if 'ATR' in df.columns and len(df) >= 20:
-            atr_ma = df['ATR'].rolling(20).mean().iloc[-1]
+            atr_ma = df['ATR'].rolling(20).mean().iloc[-1] if len(df) >= 20 else current_data['ATR']
             if current_data['ATR'] < atr_ma:
-                sentiment_score += 10
+                sentiment_score += 5
                 signals.append("低波动环境")
         
         # 超买超卖情绪
-        if current_data['RSI_12'] < 30:
-            sentiment_score += 25
-            signals.append("RSI超卖")
-        elif current_data['RSI_12'] > 70:
-            sentiment_score -= 25
-            signals.append("RSI超买")
+        if 'RSI_12' in current_data:
+            if current_data['RSI_12'] < 30:
+                sentiment_score += 15
+                signals.append("RSI超卖")
+            elif current_data['RSI_12'] > 70:
+                sentiment_score -= 15
+                signals.append("RSI超买")
         
         # 趋势情绪
-        if current_data['MACD'] > current_data['MACD_signal']:
-            sentiment_score += 15
-            signals.append("MACD金叉")
+        if 'MACD' in current_data and 'MACD_signal' in current_data:
+            if current_data['MACD'] > current_data['MACD_signal']:
+                sentiment_score += 10
+                signals.append("MACD金叉")
         
         # 资金流向情绪
-        if 'MFI' in current_data and current_data['MFI'] > 80:
-            sentiment_score -= 10
-            signals.append("MFI超买")
-        elif 'MFI' in current_data and current_data['MFI'] < 20:
-            sentiment_score += 10
-            signals.append("MFI超卖")
+        if 'MFI' in current_data:
+            if current_data['MFI'] > 80:
+                sentiment_score -= 10
+                signals.append("MFI超买")
+            elif current_data['MFI'] < 20:
+                sentiment_score += 10
+                signals.append("MFI超卖")
         
         return {
-            'sentiment_score': sentiment_score,
+            'sentiment_score': max(0, min(100, sentiment_score)),
             'sentiment_level': self.get_sentiment_level(sentiment_score),
             'signals': signals
         }
     
     def get_sentiment_level(self, score):
-        if score >= 60:
+        if score >= 70:
             return "极度乐观"
-        elif score >= 40:
+        elif score >= 60:
             return "乐观"
-        elif score >= 20:
+        elif score >= 40:
             return "中性"
-        elif score >= 0:
+        elif score >= 30:
             return "悲观"
         else:
             return "极度悲观"
@@ -432,6 +454,9 @@ class BacktestingEngine:
     
     def get_trading_signal(self, current_data, prev_data):
         """生成交易信号（简化版）"""
+        if prev_data is None:
+            return 'HOLD'
+            
         # MACD信号
         macd_bullish = current_data['MACD'] > current_data['MACD_signal'] and prev_data['MACD'] <= prev_data['MACD_signal']
         macd_bearish = current_data['MACD'] < current_data['MACD_signal'] and prev_data['MACD'] >= prev_data['MACD_signal']
@@ -449,8 +474,8 @@ class BacktestingEngine:
     
     def run_backtest(self, df, initial_capital=100000):
         """运行回测"""
-        if len(df) < 2:
-            return {'error': '数据不足进行回测'}
+        if df is None or len(df) < 10:
+            return {'error': '数据不足进行回测，至少需要10个交易日数据'}
             
         capital = initial_capital
         position = 0
@@ -464,7 +489,7 @@ class BacktestingEngine:
             # 获取交易信号
             signal = self.get_trading_signal(current_data, prev_data)
             
-            if signal == 'BUY' and position == 0:
+            if signal == 'BUY' and position == 0 and capital > 0:
                 # 买入
                 shares = capital * 0.5 / current_data['close']  # 使用50%资金
                 position = shares
@@ -603,12 +628,28 @@ class TradingDecisionEngine:
             'detailed_analysis': {}
         }
         
+        if current_data is None:
+            return scores
+            
         # 准备数据
         data = current_data.copy()
-        data['close_prev'] = prev_data['close']
-        data['OBV_prev'] = prev_data['OBV']
-        data['K_prev'] = prev_data['K']
-        data['D_prev'] = prev_data['D']
+        
+        # 确保必要的列存在
+        required_columns = ['close', 'OBV', 'K', 'D']
+        for col in required_columns:
+            if col not in data:
+                data[col] = 0
+                
+        if prev_data is not None:
+            data['close_prev'] = prev_data.get('close', 0)
+            data['OBV_prev'] = prev_data.get('OBV', 0)
+            data['K_prev'] = prev_data.get('K', 0)
+            data['D_prev'] = prev_data.get('D', 0)
+        else:
+            data['close_prev'] = data['close']
+            data['OBV_prev'] = data['OBV']
+            data['K_prev'] = data['K']
+            data['D_prev'] = data['D']
         
         # 趋势指标评估 (主帅级 - 50%)
         trend_score = 0
@@ -617,38 +658,39 @@ class TradingDecisionEngine:
         
         # MACD评估 (元帅)
         macd_conditions = self.decision_rules['trend_indicators']['MACD']
-        macd_evaluated = False
         for level, config in macd_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     trend_score += config['score']
                     trend_signals.append(f"MACD {level}信号")
                     trend_analysis.append(f"MACD({level}): {config['condition']}")
-                    macd_evaluated = True
                     break
-            except:
+            except Exception as e:
                 continue
         
         # 均线评估 (将军)
         ma_conditions = self.decision_rules['trend_indicators']['MA']
         for level, config in ma_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     trend_score += config['score']
                     trend_signals.append(f"均线{level}")
                     trend_analysis.append(f"MA({level}): {config['condition']}")
-            except:
+            except Exception as e:
                 continue
         
         # SAR评估 (先锋)
         sar_conditions = self.decision_rules['trend_indicators']['SAR']
         for level, config in sar_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     trend_score += config['score']
                     trend_signals.append(f"SAR{level}")
                     trend_analysis.append(f"SAR({level}): {config['condition']}")
-            except:
+            except Exception as e:
                 continue
         
         scores['trend_score'] = trend_score
@@ -664,24 +706,26 @@ class TradingDecisionEngine:
         volume_conditions = self.decision_rules['volume_indicators']['VMA']
         for level, config in volume_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     volume_score += config['score']
                     volume_signals.append(f"成交量{level}")
                     volume_analysis.append(f"Volume({level}): {config['condition']}")
                     break
-            except:
+            except Exception as e:
                 continue
         
         # OBV评估
         obv_conditions = self.decision_rules['volume_indicators']['OBV']
         for level, config in obv_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     volume_score += config['score']
                     volume_signals.append(f"OBV{level}")
                     volume_analysis.append(f"OBV({level}): {config['condition']}")
                     break
-            except:
+            except Exception as e:
                 continue
         
         scores['volume_score'] = volume_score
@@ -697,34 +741,37 @@ class TradingDecisionEngine:
         rsi_conditions = self.decision_rules['momentum_indicators']['RSI']
         for level, config in rsi_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     momentum_score += config['score']
                     momentum_signals.append(f"RSI{level}")
                     momentum_analysis.append(f"RSI({level}): {config['condition']}")
-            except:
+            except Exception as e:
                 continue
         
         # KDJ评估
         kdj_conditions = self.decision_rules['momentum_indicators']['KDJ']
         for level, config in kdj_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     momentum_score += config['score']
                     momentum_signals.append(f"KDJ{level}")
                     momentum_analysis.append(f"KDJ({level}): {config['condition']}")
                     break
-            except:
+            except Exception as e:
                 continue
         
         # CCI评估
         cci_conditions = self.decision_rules['momentum_indicators']['CCI']
         for level, config in cci_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     momentum_score += config['score']
                     momentum_signals.append(f"CCI{level}")
                     momentum_analysis.append(f"CCI({level}): {config['condition']}")
-            except:
+            except Exception as e:
                 continue
         
         scores['momentum_score'] = momentum_score
@@ -740,22 +787,24 @@ class TradingDecisionEngine:
         boll_conditions = self.decision_rules['volatility_indicators']['BOLL']
         for level, config in boll_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     volatility_score += config['score']
                     volatility_signals.append(f"布林带{level}")
                     volatility_analysis.append(f"BOLL({level}): {config['condition']}")
-            except:
+            except Exception as e:
                 continue
         
         # ATR评估
         atr_conditions = self.decision_rules['volatility_indicators']['ATR']
         for level, config in atr_conditions.items():
             try:
-                if eval(config['condition'], {}, data.to_dict()):
+                condition_met = eval(config['condition'], {}, data.to_dict())
+                if condition_met:
                     volatility_score += config['score']
                     volatility_signals.append(f"ATR{level}")
                     volatility_analysis.append(f"ATR({level}): {config['condition']}")
-            except:
+            except Exception as e:
                 continue
         
         scores['volatility_score'] = volatility_score
@@ -798,6 +847,10 @@ class TradingDecisionEngine:
 
 def display_price_charts(df, stock_name):
     """显示价格走势图表（包含MACD）"""
+    if df is None or len(df) == 0:
+        st.warning("无数据可显示图表")
+        return
+        
     st.subheader(f"{stock_name} - 价格走势与技术指标")
     
     # 使用plotly创建交互式图表
@@ -873,6 +926,9 @@ def display_price_charts(df, stock_name):
 
 def display_mini_price_chart(df_period, stock_name):
     """显示迷你版价格走势图"""
+    if df_period is None or len(df_period) == 0:
+        return
+        
     fig = make_subplots(rows=2, cols=1, 
                        shared_xaxes=True,
                        vertical_spacing=0.05,
@@ -979,13 +1035,17 @@ def get_indicator_status(value, indicator_type, comparison_value=None):
 
 def display_technical_indicators_table(df):
     """显示技术指标表格 - 使用Streamlit原生DataFrame样式"""
+    if df is None or len(df) == 0:
+        st.warning("无数据可显示技术指标")
+        return
+        
     st.subheader("📊 技术指标详细分析")
     
     # 获取最近22个交易日的数据（一个月）
-    recent_data = df.tail(22).copy()
+    recent_data = df.tail(min(22, len(df))).copy()
     
     # 显示迷你价格走势图
-    st.write("### 当前分析时间段价格走势（最近一个月）")
+    st.write("### 当前分析时间段价格走势")
     display_mini_price_chart(recent_data, "当前分析")
     
     # 定义指标分组和显示格式
@@ -1040,50 +1100,60 @@ def display_technical_indicators_table(df):
         
         with col1:
             st.write("**趋势指标 (主帅)**")
-            st.session_state.selected_indicators['MACD'] = st.checkbox("MACD", value=st.session_state.selected_indicators['MACD'], key="MACD")
-            st.session_state.selected_indicators['MACD信号'] = st.checkbox("MACD信号", value=st.session_state.selected_indicators['MACD信号'], key="MACD信号")
-            st.session_state.selected_indicators['MACD柱状图'] = st.checkbox("MACD柱状图", value=st.session_state.selected_indicators['MACD柱状图'], key="MACD柱状图")
-            st.session_state.selected_indicators['MA5'] = st.checkbox("MA5", value=st.session_state.selected_indicators['MA5'], key="MA5")
-            st.session_state.selected_indicators['MA20'] = st.checkbox("MA20", value=st.session_state.selected_indicators['MA20'], key="MA20")
+            for indicator in ['MACD', 'MACD信号', 'MACD柱状图', 'MA5', 'MA20']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
         
         with col2:
             st.write("**趋势指标 (主帅)**")
-            st.session_state.selected_indicators['MA60'] = st.checkbox("MA60", value=st.session_state.selected_indicators['MA60'], key="MA60")
-            st.session_state.selected_indicators['MA120'] = st.checkbox("MA120", value=st.session_state.selected_indicators['MA120'], key="MA120")
+            for indicator in ['MA60', 'MA120']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
             
             st.write("**成交量指标 (政委)**")
-            st.session_state.selected_indicators['成交量'] = st.checkbox("成交量", value=st.session_state.selected_indicators['成交量'], key="成交量")
-            st.session_state.selected_indicators['成交量比'] = st.checkbox("成交量比", value=st.session_state.selected_indicators['成交量比'], key="成交量比")
-            st.session_state.selected_indicators['OBV'] = st.checkbox("OBV", value=st.session_state.selected_indicators['OBV'], key="OBV")
+            for indicator in ['成交量', '成交量比', 'OBV']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
         
         with col3:
             st.write("**动量指标 (参谋)**")
-            st.session_state.selected_indicators['RSI_6'] = st.checkbox("RSI_6", value=st.session_state.selected_indicators['RSI_6'], key="RSI_6")
-            st.session_state.selected_indicators['RSI_12'] = st.checkbox("RSI_12", value=st.session_state.selected_indicators['RSI_12'], key="RSI_12")
-            st.session_state.selected_indicators['RSI_24'] = st.checkbox("RSI_24", value=st.session_state.selected_indicators['RSI_24'], key="RSI_24")
-            st.session_state.selected_indicators['K值'] = st.checkbox("K值", value=st.session_state.selected_indicators['K值'], key="K值")
-            st.session_state.selected_indicators['D值'] = st.checkbox("D值", value=st.session_state.selected_indicators['D值'], key="D值")
+            for indicator in ['RSI_6', 'RSI_12', 'RSI_24', 'K值', 'D值']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
         
         with col4:
             st.write("**动量指标 (参谋)**")
-            st.session_state.selected_indicators['J值'] = st.checkbox("J值", value=st.session_state.selected_indicators['J值'], key="J值")
-            st.session_state.selected_indicators['CCI'] = st.checkbox("CCI", value=st.session_state.selected_indicators['CCI'], key="CCI")
-            st.session_state.selected_indicators['威廉指标'] = st.checkbox("威廉指标", value=st.session_state.selected_indicators['威廉指标'], key="威廉指标")
+            for indicator in ['J值', 'CCI', '威廉指标']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
             
             st.write("**波动率指标 (工兵)**")
-            st.session_state.selected_indicators['布林上轨'] = st.checkbox("布林上轨", value=st.session_state.selected_indicators['布林上轨'], key="布林上轨")
-            st.session_state.selected_indicators['布林中轨'] = st.checkbox("布林中轨", value=st.session_state.selected_indicators['布林中轨'], key="布林中轨")
-            st.session_state.selected_indicators['布林下轨'] = st.checkbox("布林下轨", value=st.session_state.selected_indicators['布林下轨'], key="布林下轨")
-            st.session_state.selected_indicators['ATR'] = st.checkbox("ATR", value=st.session_state.selected_indicators['ATR'], key="ATR")
-            st.session_state.selected_indicators['+DI'] = st.checkbox("+DI", value=st.session_state.selected_indicators['+DI'], key="+DI")
-            st.session_state.selected_indicators['-DI'] = st.checkbox("-DI", value=st.session_state.selected_indicators['-DI'], key="-DI")
-            st.session_state.selected_indicators['ADX'] = st.checkbox("ADX", value=st.session_state.selected_indicators['ADX'], key="ADX")
-            st.session_state.selected_indicators['MFI'] = st.checkbox("MFI", value=st.session_state.selected_indicators['MFI'], key="MFI")
+            for indicator in ['布林上轨', '布林中轨', '布林下轨', 'ATR', '+DI', '-DI', 'ADX', 'MFI']:
+                st.session_state.selected_indicators[indicator] = st.checkbox(
+                    indicator, 
+                    value=st.session_state.selected_indicators[indicator], 
+                    key=f"tech_{indicator}"
+                )
     
     # 根据用户选择过滤指标
     selected_indicators = {}
     for indicator_name, config in indicator_configs.items():
-        if st.session_state.selected_indicators.get(indicator_name, False):
+        if st.session_state.selected_indicators.get(indicator_name, False) and config['column'] in recent_data.columns:
             selected_indicators[indicator_name] = config
     
     if not selected_indicators:
@@ -1104,14 +1174,20 @@ def display_technical_indicators_table(df):
             value = recent_data.loc[date, config['column']]
             
             # 格式化数值
-            formatted_value = format(value, config['format'])
+            try:
+                formatted_value = format(value, config['format'])
+            except:
+                formatted_value = str(value)
             
             # 获取状态和颜色
-            if config['type'] == 'MA_relation' and 'compare_with' in config:
-                compare_value = recent_data.loc[date, config['compare_with']]
-                status_emoji, status_type = get_indicator_status(value, config['type'], compare_value)
-            else:
-                status_emoji, status_type = get_indicator_status(value, config['type'])
+            try:
+                if config['type'] == 'MA_relation' and 'compare_with' in config:
+                    compare_value = recent_data.loc[date, config['compare_with']]
+                    status_emoji, status_type = get_indicator_status(value, config['type'], compare_value)
+                else:
+                    status_emoji, status_type = get_indicator_status(value, config['type'])
+            except:
+                status_emoji, status_type = "⚪", "unknown"
             
             # 添加数值和状态 - 使用日期作为列名
             date_str = date.strftime('%m-%d')
@@ -1129,94 +1205,23 @@ def display_technical_indicators_table(df):
         
         # 显示颜色说明
         st.write("**颜色说明**: 🟢 积极信号 | 🔴 消极信号 | 🟡 中性信号 | ⚪ 未知状态")
-        
-        # 添加同步滚动功能的CSS和JavaScript
-        st.markdown("""
-        <style>
-        /* 确保表格容器有滚动条 */
-        .stDataFrame {
-            overflow-x: auto;
-        }
-        
-        /* 为表格添加边框样式，更像Excel */
-        .stDataFrame table {
-            border-collapse: collapse;
-            border-spacing: 0;
-        }
-        
-        .stDataFrame th, .stDataFrame td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: center;
-        }
-        
-        .stDataFrame th {
-            background-color: #f2f2f2;
-            position: sticky;
-            top: 0;
-        }
-        
-        /* 第一列特殊样式 */
-        .stDataFrame th:first-child,
-        .stDataFrame td:first-child {
-            background-color: #f8f9fa;
-            font-weight: bold;
-            position: sticky;
-            left: 0;
-            z-index: 1;
-        }
-        </style>
-        
-        <script>
-        // 同步滚动功能
-        function syncScroll() {
-            const tables = document.querySelectorAll('.stDataFrame');
-            const plots = document.querySelectorAll('.js-plotly-plot');
-            
-            // 为所有表格和图表添加滚动监听
-            [...tables, ...plots].forEach(element => {
-                element.addEventListener('scroll', function(e) {
-                    const scrollLeft = e.target.scrollLeft;
-                    
-                    // 同步所有元素的滚动位置
-                    [...tables, ...plots].forEach(otherElement => {
-                        if (otherElement !== e.target) {
-                            otherElement.scrollLeft = scrollLeft;
-                        }
-                    });
-                });
-            });
-        }
-        
-        // 页面加载后执行同步滚动设置
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', syncScroll);
-        } else {
-            syncScroll();
-        }
-        
-        // 监听Streamlit的内容变化
-        const observer = new MutationObserver(syncScroll);
-        observer.observe(document.body, { childList: true, subtree: true });
-        </script>
-        """, unsafe_allow_html=True)
     else:
         st.info("无可用指标数据")
 
 def display_decision_analysis(df):
     """显示决策分析"""
+    if df is None or len(df) < 2:
+        st.warning("数据不足进行决策分析")
+        return
+        
     st.subheader("🤖 多指标决策分析")
     
     # 初始化决策引擎
     decision_engine = TradingDecisionEngine()
     
     # 获取最新数据
-    if len(df) < 2:
-        st.warning("数据不足进行决策分析")
-        return
-    
-    current_data = df.iloc[-1]
-    prev_data = df.iloc[-2]
+    current_data = df.iloc[-1] if len(df) > 0 else None
+    prev_data = df.iloc[-2] if len(df) > 1 else None
     
     # 评估当前状态
     scores = decision_engine.evaluate_conditions(current_data, prev_data)
@@ -1274,11 +1279,19 @@ def display_decision_analysis(df):
 
 def display_indicator_details(df):
     """显示指标详细分析 - 按照分层指挥体系"""
+    if df is None or len(df) == 0:
+        st.warning("数据不足显示指标详情")
+        return
+        
     st.subheader("🎯 分层指挥体系指标详解")
     
     # 获取最新数据
-    current_data = df.iloc[-1]
+    current_data = df.iloc[-1] if len(df) > 0 else None
     prev_data = df.iloc[-2] if len(df) > 1 else current_data
+    
+    if current_data is None:
+        st.warning("无法获取当前数据")
+        return
     
     # 趋势指标分析 (主帅级)
     st.write("### 🎖️ 趋势指标分析 (主帅级 - 定方向)")
@@ -1287,202 +1300,63 @@ def display_indicator_details(df):
     
     with col1:
         st.write("#### MACD (元帅)")
-        # MACD状态分析
-        macd_status = "金叉" if current_data['MACD'] > current_data['MACD_signal'] else "死叉"
-        macd_position = "0轴上方" if current_data['MACD'] > 0 else "0轴下方"
-        macd_slope_status = "向上" if current_data['MACD_slope'] > 0 else "向下"
-        dea_slope_status = "向上" if current_data['DEA_slope'] > 0 else "向下"
-        
-        st.write(f"- **状态**: {macd_status} | {macd_position}")
-        st.write(f"- **MACD值**: {current_data['MACD']:.4f}")
-        st.write(f"- **信号线**: {current_data['MACD_signal']:.4f}")
-        st.write(f"- **柱状图**: {current_data['MACD_hist']:.4f}")
-        st.write(f"- **MACD斜率**: {macd_slope_status}")
-        st.write(f"- **DEA斜率**: {dea_slope_status}")
-        
-        # MACD信号分级
-        if (current_data['MACD'] > 0 and 
-            current_data['MACD'] > current_data['MACD_signal'] and 
-            current_data['MACD_slope'] > 0 and 
-            current_data['DEA_slope'] > 0):
-            st.success("**S级信号**: 0轴上方金叉 + DEA斜率>0 → 满仓信号")
-        elif (current_data['MACD'] < 0 and 
-              current_data['MACD'] > current_data['MACD_signal'] and 
-              current_data['MACD_hist'] > 0):
-            st.info("**A级信号**: 0轴下方金叉但红柱持续放大 → 试仓信号")
-        elif (current_data['MACD'] > 0 and 
-              current_data['MACD'] < current_data['MACD_signal']):
-            st.warning("**B级信号**: 死叉但未破0轴 → 减仓")
-        elif (current_data['MACD'] < 0 and 
-              current_data['MACD'] < current_data['MACD_signal'] and 
-              current_data['MACD_hist'] < 0):
-            st.error("**C级信号**: 0轴下方死叉 + 绿柱放大 → 空仓")
+        if all(col in current_data for col in ['MACD', 'MACD_signal', 'MACD_slope', 'DEA_slope']):
+            # MACD状态分析
+            macd_status = "金叉" if current_data['MACD'] > current_data['MACD_signal'] else "死叉"
+            macd_position = "0轴上方" if current_data['MACD'] > 0 else "0轴下方"
+            macd_slope_status = "向上" if current_data['MACD_slope'] > 0 else "向下"
+            dea_slope_status = "向上" if current_data['DEA_slope'] > 0 else "向下"
+            
+            st.write(f"- **状态**: {macd_status} | {macd_position}")
+            st.write(f"- **MACD值**: {current_data['MACD']:.4f}")
+            st.write(f"- **信号线**: {current_data['MACD_signal']:.4f}")
+            st.write(f"- **柱状图**: {current_data['MACD_hist']:.4f}")
+            st.write(f"- **MACD斜率**: {macd_slope_status}")
+            st.write(f"- **DEA斜率**: {dea_slope_status}")
+            
+            # MACD信号分级
+            if (current_data['MACD'] > 0 and 
+                current_data['MACD'] > current_data['MACD_signal'] and 
+                current_data['MACD_slope'] > 0 and 
+                current_data['DEA_slope'] > 0):
+                st.success("**S级信号**: 0轴上方金叉 + DEA斜率>0 → 满仓信号")
+            elif (current_data['MACD'] < 0 and 
+                  current_data['MACD'] > current_data['MACD_signal'] and 
+                  current_data['MACD_hist'] > 0):
+                st.info("**A级信号**: 0轴下方金叉但红柱持续放大 → 试仓信号")
+            elif (current_data['MACD'] > 0 and 
+                  current_data['MACD'] < current_data['MACD_signal']):
+                st.warning("**B级信号**: 死叉但未破0轴 → 减仓")
+            elif (current_data['MACD'] < 0 and 
+                  current_data['MACD'] < current_data['MACD_signal'] and 
+                  current_data['MACD_hist'] < 0):
+                st.error("**C级信号**: 0轴下方死叉 + 绿柱放大 → 空仓")
+        else:
+            st.warning("MACD数据不足")
     
     with col2:
         st.write("#### 均线系统 (将军)")
-        # 均线排列分析
-        ma20_60 = current_data['MA20'] > current_data['MA60']
-        ma60_120 = current_data['MA60'] > current_data['MA120']
-        ma60_direction = "向上" if current_data['MA60_direction'] > 0 else "向下"
-        
-        if ma20_60 and ma60_120 and current_data['MA60_direction'] > 0:
-            st.success("**多头排列**: MA20>MA60>MA120 + MA60向上")
-            st.write("- **策略**: 任何回踩都是买点")
-        elif not ma20_60 and not ma60_120 and current_data['MA60_direction'] < 0:
-            st.error("**空头排列**: MA20<MA60<MA120 + MA60向下")
-            st.write("- **策略**: 反弹减仓")
-        else:
-            st.warning("**纠结状态**: 均线方向不明")
-            st.write("- **策略**: 观望等待方向")
-        
-        st.write(f"- **MA20**: {current_data['MA20']:.2f}")
-        st.write(f"- **MA60**: {current_data['MA60']:.2f} ({ma60_direction})")
-        st.write(f"- **MA120**: {current_data['MA120']:.2f}")
-        
-        # 均线金叉分析
-        if (current_data['MA60'] > current_data['MA60_direction'] and 
-            current_data['MA20'] > current_data['MA60']):
-            st.info("**MA60上穿MA120金叉**: 牛熊转换信号")
-    
-    # 成交量指标分析 (政委级)
-    st.write("### 📊 成交量指标分析 (政委级 - 验真伪)")
-    
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        st.write("#### 成交量分析")
-        volume_ratio = current_data['volume_ratio']
-        if volume_ratio > 1.5:
-            volume_status = "🟢 放量"
-            st.success(f"**放量**: 比率{volume_ratio:.2f}倍")
-            st.write("- **策略**: 真信号，可参与")
-        elif volume_ratio > 1.2:
-            volume_status = "🟡 温和"
-            st.info(f"**温和**: 比率{volume_ratio:.2f}倍")
-            st.write("- **策略**: 正常参与")
-        else:
-            volume_status = "🔴 缩量"
-            st.error(f"**缩量**: 比率{volume_ratio:.2f}倍")
-            st.write("- **策略**: 假信号，不参与")
-        
-        st.write(f"- **成交量**: {current_data['vol']:.0f}")
-        st.write(f"- **VMA5**: {current_data['VMA5']:.0f}")
-    
-    with col4:
-        st.write("#### OBV能量潮")
-        obv_trend = "上升" if current_data['OBV'] > prev_data['OBV'] else "下降"
-        price_trend = "上升" if current_data['close'] > prev_data['close'] else "下降"
-        
-        if price_trend == "上升" and obv_trend == "上升":
-            st.success("**健康上涨**: 价涨量增")
-            st.write("- **策略**: 可持有")
-        elif price_trend == "上升" and obv_trend == "下降":
-            st.warning("**顶背离**: 价涨量缩")
-            st.write("- **策略**: 准备减仓")
-        elif price_trend == "下降" and obv_trend == "下降":
-            st.error("**正常下跌**: 价跌量缩")
-            st.write("- **策略**: 别抄底")
-        elif price_trend == "下降" and obv_trend == "上升":
-            st.info("**底背离**: 价跌量增")
-            st.write("- **策略**: 关注机会")
-        
-        st.write(f"- **OBV**: {current_data['OBV']:.0f}")
-        st.write(f"- **趋势**: {obv_trend}")
-    
-    # 动量指标分析 (参谋级)
-    st.write("### ⚡ 动量指标分析 (参谋级 - 找时机)")
-    
-    col5, col6 = st.columns(2)
-    
-    with col5:
-        st.write("#### RSI分析")
-        rsi_6 = current_data['RSI_6']
-        rsi_12 = current_data['RSI_12']
-        rsi_24 = current_data['RSI_24']
-        
-        # RSI多周期分析
-        st.write(f"- **RSI_6**: {rsi_6:.1f}")
-        st.write(f"- **RSI_12**: {rsi_12:.1f}")
-        st.write(f"- **RSI_24**: {rsi_24:.1f}")
-        
-        if rsi_12 > 70:
-            st.error("**超买区域**: RSI>70")
-            st.write("- **策略**: 谨慎，可能回调")
-        elif rsi_12 < 30:
-            st.success("**超卖区域**: RSI<30")
-            st.write("- **策略**: 关注反弹机会")
-        elif rsi_12 > 50:
-            st.info("**强势区域**: RSI>50")
-            st.write("- **策略**: 持仓线之上")
-        else:
-            st.warning("**弱势区域**: RSI<50")
-            st.write("- **策略**: 减仓线之下")
-    
-    with col6:
-        st.write("#### KDJ分析")
-        kdj_cross = "金叉" if current_data['K'] > current_data['D'] else "死叉"
-        k_prev = prev_data['K'] if 'K' in prev_data else current_data['K']
-        d_prev = prev_data['D'] if 'D' in prev_data else current_data['D']
-        fresh_cross = (current_data['K'] > current_data['D'] and k_prev <= d_prev) or \
-                     (current_data['K'] < current_data['D'] and k_prev >= d_prev)
-        
-        st.write(f"- **K值**: {current_data['K']:.1f}")
-        st.write(f"- **D值**: {current_data['D']:.1f}")
-        st.write(f"- **J值**: {current_data['J']:.1f}")
-        st.write(f"- **状态**: {kdj_cross}")
-        
-        if fresh_cross:
-            if current_data['K'] > current_data['D']:
-                st.success("**新鲜金叉**: 买入时机")
+        if all(col in current_data for col in ['MA20', 'MA60', 'MA120', 'MA60_direction']):
+            # 均线排列分析
+            ma20_60 = current_data['MA20'] > current_data['MA60']
+            ma60_120 = current_data['MA60'] > current_data['MA120']
+            ma60_direction = "向上" if current_data['MA60_direction'] > 0 else "向下"
+            
+            if ma20_60 and ma60_120 and current_data['MA60_direction'] > 0:
+                st.success("**多头排列**: MA20>MA60>MA120 + MA60向上")
+                st.write("- **策略**: 任何回踩都是买点")
+            elif not ma20_60 and not ma60_120 and current_data['MA60_direction'] < 0:
+                st.error("**空头排列**: MA20<MA60<MA120 + MA60向下")
+                st.write("- **策略**: 反弹减仓")
             else:
-                st.error("**新鲜死叉**: 卖出时机")
+                st.warning("**纠结状态**: 均线方向不明")
+                st.write("- **策略**: 观望等待方向")
+            
+            st.write(f"- **MA20**: {current_data['MA20']:.2f}")
+            st.write(f"- **MA60**: {current_data['MA60']:.2f} ({ma60_direction})")
+            st.write(f"- **MA120**: {current_data['MA120']:.2f}")
         else:
-            st.info("**延续状态**: 保持现有策略")
-    
-    # 波动率指标分析 (工兵级)
-    st.write("### 📏 波动率指标分析 (工兵级 - 划边界)")
-    
-    col7, col8 = st.columns(2)
-    
-    with col7:
-        st.write("#### 布林带分析")
-        boll_position = current_data['BB_position']
-        if boll_position > 0.8:
-            boll_status = "🔴 上轨压力"
-            st.error("**上轨压力**: 位置{:.2f}".format(boll_position))
-            st.write("- **策略**: 减仓30%")
-        elif boll_position < 0.2:
-            boll_status = "🟢 下轨支撑"
-            st.success("**下轨支撑**: 位置{:.2f}".format(boll_position))
-            st.write("- **策略**: 关注支撑")
-        else:
-            boll_status = "🟡 中轨附近"
-            st.info("**中轨附近**: 位置{:.2f}".format(boll_position))
-            st.write("- **策略**: 正常持仓")
-        
-        st.write(f"- **上轨**: {current_data['BB_upper']:.2f}")
-        st.write(f"- **中轨**: {current_data['BB_middle']:.2f}")
-        st.write(f"- **下轨**: {current_data['BB_lower']:.2f}")
-    
-    with col8:
-        st.write("#### ATR波动分析")
-        atr_value = current_data['ATR']
-        atr_ma = df['ATR'].rolling(20).mean().iloc[-1]
-        
-        st.write(f"- **ATR**: {atr_value:.3f}")
-        st.write(f"- **20日均值**: {atr_ma:.3f}")
-        
-        if atr_value > atr_ma:
-            st.warning("**高波动期**: ATR高于均值")
-            st.write("- **策略**: 止损放宽1.5倍")
-        else:
-            st.success("**低波动期**: ATR低于均值")
-            st.write("- **策略**: 正常止损")
-        
-        # 计算止损位
-        if 'close' in current_data:
-            stop_loss = current_data['close'] - atr_value * 1.5
-            st.write(f"- **建议止损**: {stop_loss:.2f}")
+            st.warning("均线数据不足")
 
 def display_data_quality_report(df, analyzer):
     """显示数据质量报告"""
@@ -1507,21 +1381,26 @@ def display_data_quality_report(df, analyzer):
         st.success("数据质量良好，无重大问题")
     
     # 显示基本统计信息
-    st.write("#### 数据统计信息")
-    stats_df = pd.DataFrame({
-        '统计项': ['数据期间', '交易日数量', '最新价格', '价格变化率', '平均成交量'],
-        '数值': [
-            f"{df.index.min().strftime('%Y-%m-%d')} 至 {df.index.max().strftime('%Y-%m-%d')}",
-            len(df),
-            f"{df['close'].iloc[-1]:.2f}",
-            f"{((df['close'].iloc[-1] - df['close'].iloc[0]) / df['close'].iloc[0] * 100):.2f}%",
-            f"{df['vol'].mean():.0f}"
-        ]
-    })
-    st.dataframe(stats_df, use_container_width=True)
+    if df is not None and len(df) > 0:
+        st.write("#### 数据统计信息")
+        stats_df = pd.DataFrame({
+            '统计项': ['数据期间', '交易日数量', '最新价格', '价格变化率', '平均成交量'],
+            '数值': [
+                f"{df.index.min().strftime('%Y-%m-%d')} 至 {df.index.max().strftime('%Y-%m-%d')}",
+                len(df),
+                f"{df['close'].iloc[-1]:.2f}",
+                f"{((df['close'].iloc[-1] - df['close'].iloc[0]) / df['close'].iloc[0] * 100):.2f}%" if df['close'].iloc[0] > 0 else "N/A",
+                f"{df['vol'].mean():.0f}"
+            ]
+        })
+        st.dataframe(stats_df, use_container_width=True)
 
 def display_risk_management_report(df, signal_strength):
     """显示风险管理报告"""
+    if df is None or len(df) == 0:
+        st.warning("数据不足进行风险管理分析")
+        return
+        
     st.subheader("🛡️ 风险管理报告")
     
     risk_manager = RiskManagementSystem()
@@ -1568,13 +1447,17 @@ def display_risk_management_report(df, signal_strength):
             f"{risk_report['risk_reward_ratio']:.2f}:1",
             f"¥{risk_report['max_loss']:,.0f}",
             f"¥{(risk_report['stop_loss'] + (risk_report['profit_target'] - risk_report['stop_loss']) / 2):.2f}",
-            f"{((current_price - risk_report['stop_loss']) / current_price * 100):.1f}%"
+            f"{((current_price - risk_report['stop_loss']) / current_price * 100):.1f}%" if current_price > 0 else "N/A"
         ]
     }
     st.dataframe(pd.DataFrame(risk_reward_data), use_container_width=True)
 
 def display_market_sentiment(df, analyzer):
     """显示市场情绪分析"""
+    if df is None or len(df) == 0:
+        st.warning("数据不足进行情绪分析")
+        return
+        
     st.subheader("😊 市场情绪分析")
     
     sentiment_analyzer = MarketSentimentAnalyzer(analyzer)
@@ -1620,52 +1503,13 @@ def display_market_sentiment(df, analyzer):
                 st.write(f"- {signal}")
         else:
             st.write("暂无明确情绪信号")
-    
-    # 情绪历史趋势
-    st.write("#### 情绪历史趋势")
-    if len(df) >= 20:
-        # 计算历史情绪分数（简化版）
-        sentiment_history = []
-        for i in range(20, len(df)):
-            window_data = df.iloc[i-20:i]
-            current_window = window_data.iloc[-1]
-            
-            # 简化计算
-            score = 50
-            if current_window['close'] > current_window['MA20']:
-                score += 10
-            if current_window['volume_ratio'] > 1.2:
-                score += 10
-            if current_window['RSI_12'] < 30:
-                score += 15
-            elif current_window['RSI_12'] > 70:
-                score -= 15
-                
-            sentiment_history.append({
-                'date': window_data.index[-1],
-                'sentiment_score': max(0, min(100, score))
-            })
-        
-        if sentiment_history:
-            sentiment_df = pd.DataFrame(sentiment_history)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=sentiment_df['date'],
-                y=sentiment_df['sentiment_score'],
-                mode='lines',
-                name='情绪指数',
-                line=dict(color='blue', width=2)
-            ))
-            fig.update_layout(
-                title="情绪指数历史走势",
-                xaxis_title="日期",
-                yaxis_title="情绪指数",
-                height=300
-            )
-            st.plotly_chart(fig, use_container_width=True)
 
 def display_backtest_results(df):
     """显示回测结果"""
+    if df is None or len(df) < 10:
+        st.warning("数据不足进行回测分析，至少需要10个交易日数据")
+        return
+        
     st.subheader("📊 策略回测分析")
     
     backtester = BacktestingEngine()
@@ -1716,121 +1560,6 @@ def display_backtest_results(df):
         st.dataframe(trades_df, use_container_width=True)
     else:
         st.info("回测期间无交易信号")
-    
-    # 回测统计
-    st.write("#### 回测统计")
-    if results['trades']:
-        buy_trades = [t for t in results['trades'] if t['action'] == 'BUY']
-        sell_trades = [t for t in results['trades'] if t['action'] == 'SELL']
-        
-        stats_data = {
-            '统计项': ['总交易次数', '买入次数', '卖出次数', '平均持仓时间', '胜率'],
-            '数值': [
-                len(results['trades']),
-                len(buy_trades),
-                len(sell_trades),
-                "N/A",  # 简化计算
-                "N/A"   # 简化计算
-            ]
-        }
-        st.dataframe(pd.DataFrame(stats_data), use_container_width=True)
-
-def display_real_time_monitoring(df):
-    """显示实时监控"""
-    st.subheader("⚡ 实时监控面板")
-    
-    if len(df) < 2:
-        st.warning("数据不足进行实时监控")
-        return
-    
-    current_data = df.iloc[-1]
-    prev_data = df.iloc[-2]
-    
-    # 关键指标监控
-    st.write("#### 关键指标监控")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        price_change = ((current_data['close'] - prev_data['close']) / prev_data['close']) * 100
-        st.metric("当前价格", f"¥{current_data['close']:.2f}", delta=f"{price_change:.2f}%")
-    
-    with col2:
-        volume_change = ((current_data['vol'] - prev_data['vol']) / prev_data['vol']) * 100
-        st.metric("成交量", f"{current_data['vol']:,.0f}", delta=f"{volume_change:.2f}%")
-    
-    with col3:
-        rsi_change = current_data['RSI_12'] - prev_data['RSI_12']
-        st.metric("RSI(12)", f"{current_data['RSI_12']:.1f}", delta=f"{rsi_change:.1f}")
-    
-    with col4:
-        macd_change = current_data['MACD'] - prev_data['MACD']
-        st.metric("MACD", f"{current_data['MACD']:.4f}", delta=f"{macd_change:.4f}")
-    
-    # 预警系统
-    st.write("#### 预警信号")
-    alerts = []
-    
-    # RSI超买超卖预警
-    if current_data['RSI_12'] > 70:
-        alerts.append("🔴 RSI超买，注意回调风险")
-    elif current_data['RSI_12'] < 30:
-        alerts.append("🟢 RSI超卖，关注反弹机会")
-    
-    # 成交量异常预警
-    if current_data['volume_ratio'] > 2.0:
-        alerts.append("🔴 成交量异常放大，注意风险")
-    elif current_data['volume_ratio'] < 0.5:
-        alerts.append("🟡 成交量萎缩，流动性不足")
-    
-    # 价格突破预警
-    if 'BB_upper' in current_data and current_data['close'] > current_data['BB_upper']:
-        alerts.append("🔴 价格突破布林带上轨，可能超买")
-    elif 'BB_lower' in current_data and current_data['close'] < current_data['BB_lower']:
-        alerts.append("🟢 价格突破布林带下轨，可能超卖")
-    
-    # MACD死叉金叉预警
-    if (current_data['MACD'] > current_data['MACD_signal'] and 
-        prev_data['MACD'] <= prev_data['MACD_signal']):
-        alerts.append("🟢 MACD金叉，看多信号")
-    elif (current_data['MACD'] < current_data['MACD_signal'] and 
-          prev_data['MACD'] >= prev_data['MACD_signal']):
-        alerts.append("🔴 MACD死叉，看空信号")
-    
-    # 显示预警
-    if alerts:
-        for alert in alerts:
-            if "🔴" in alert:
-                st.error(alert)
-            elif "🟢" in alert:
-                st.success(alert)
-            else:
-                st.warning(alert)
-    else:
-        st.info("当前无预警信号")
-    
-    # 实时指标变化
-    st.write("#### 指标变化监测")
-    changes_data = {
-        '指标': ['价格', '成交量', 'RSI(12)', 'MACD', 'KDJ-K', '布林带位置'],
-        '当前值': [
-            f"¥{current_data['close']:.2f}",
-            f"{current_data['vol']:,.0f}",
-            f"{current_data['RSI_12']:.1f}",
-            f"{current_data['MACD']:.4f}",
-            f"{current_data['K']:.1f}",
-            f"{current_data['BB_position']:.2f}" if 'BB_position' in current_data else "N/A"
-        ],
-        '变化': [
-            f"{price_change:+.2f}%",
-            f"{volume_change:+.2f}%",
-            f"{rsi_change:+.1f}",
-            f"{macd_change:+.4f}",
-            f"{(current_data['K'] - prev_data['K']):+.1f}",
-            f"{(current_data['BB_position'] - prev_data['BB_position']):+.2f}" if 'BB_position' in current_data else "N/A"
-        ]
-    }
-    st.dataframe(pd.DataFrame(changes_data), use_container_width=True)
 
 def main():
     st.title("🎖️ 股票多指标决策系统")
@@ -1850,6 +1579,11 @@ def main():
         1. 访问 [Tushare官网](https://tushare.pro) 注册账号
         2. 在个人中心获取API Token
         3. 将Token粘贴到左侧输入框中
+        
+        **示例股票代码:**
+        - 000001.SZ (平安银行)
+        - 600000.SH (浦发银行)
+        - 000858.SZ (五粮液)
         """)
         return
     
@@ -1890,10 +1624,24 @@ def main():
                 
                 if df is None or df.empty:
                     st.error("未能获取到股票数据，请检查股票代码和日期范围")
+                    st.info("""
+                    **可能的原因:**
+                    1. 股票代码格式错误
+                    2. Token无效或过期
+                    3. 选择的日期范围内无交易数据
+                    4. 网络连接问题
+                    """)
                     return
+                
+                if len(df) < 60:
+                    st.warning(f"数据长度较短（{len(df)}个交易日），部分长期指标可能不准确")
                 
                 # 计算所有技术指标
                 df_with_indicators = analyzer.calculate_all_indicators(df)
+                
+                if df_with_indicators is None or len(df_with_indicators) == 0:
+                    st.error("计算技术指标失败，数据不足")
+                    return
                 
                 # 显示基本信息
                 st.subheader(f"🎯 {stock_name} ({ts_code}) 多指标决策分析")
@@ -1958,7 +1706,13 @@ def main():
                     
             except Exception as e:
                 st.error(f"分析过程中出现错误: {str(e)}")
-                st.error("请检查Token是否有效或股票代码是否正确")
+                st.info("""
+                **常见问题解决方法:**
+                1. 检查Tushare Token是否正确
+                2. 确认股票代码格式正确（如：000001.SZ）
+                3. 尝试调整日期范围
+                4. 检查网络连接
+                """)
 
 if __name__ == "__main__":
     main()
