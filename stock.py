@@ -267,11 +267,10 @@ class AdvancedTradingDecisionSystem:
         df = self.calculate_sar(df)
         df = self.calculate_additional_indicators(df)
         
-        # 只删除全是NaN的行，保留部分有数据的行
         return df
 
     def data_quality_check(self, df):
-        """数据质量检查"""
+        """数据质量检查 - 只检查原始数据，不检查技术指标"""
         if df is None or len(df) == 0:
             return {
                 'has_issues': True,
@@ -281,10 +280,13 @@ class AdvancedTradingDecisionSystem:
             
         issues = []
         
-        # 检查缺失值
-        missing_data = df.isnull().sum()
+        # 只检查原始数据字段
+        original_columns = ['open', 'high', 'low', 'close', 'vol']
+        
+        # 检查原始数据缺失值
+        missing_data = df[original_columns].isnull().sum()
         if missing_data.any():
-            issues.append(f"存在缺失数据: {dict(missing_data[missing_data > 0])}")
+            issues.append(f"原始数据存在缺失: {dict(missing_data[missing_data > 0])}")
         
         # 检查异常值
         price_change = df['close'].pct_change().abs()
@@ -303,10 +305,13 @@ class AdvancedTradingDecisionSystem:
         if len(gap_days) > 0:
             issues.append(f"发现{len(gap_days)}个数据断点")
         
+        # 技术指标的NaN是正常的，不视为问题
+        score_deduction = len([issue for issue in issues if "原始数据" in issue or "异常" in issue or "零成交量" in issue])
+        
         return {
             'has_issues': len(issues) > 0,
             'issues': issues,
-            'data_quality_score': max(0, 100 - len(issues) * 10)
+            'data_quality_score': max(0, 100 - score_deduction * 20)
         }
 
 class RiskManagementSystem:
@@ -380,12 +385,18 @@ class MarketSentimentAnalyzer:
         self.analyzer = analyzer
     
     def analyze_sentiment(self, df):
-        """分析市场情绪"""
+        """分析市场情绪 - 透明化计算过程"""
         if df is None or len(df) < 20:
-            return {'sentiment_score': 50, 'sentiment_level': '数据不足', 'signals': []}
+            return {
+                'sentiment_score': 50, 
+                'sentiment_level': '数据不足', 
+                'signals': [],
+                'detailed_scores': {}
+            }
             
         sentiment_score = 50  # 从50开始，而不是0
         signals = []
+        detailed_scores = {}
         
         current_data = df.iloc[-1]
         
@@ -393,11 +404,18 @@ class MarketSentimentAnalyzer:
         if 'MA20' in current_data and current_data['close'] > current_data['MA20']:
             sentiment_score += 10
             signals.append("价格在20日均线上方")
+            detailed_scores['价格在20日均线上方'] = 10
         
         # 成交量情绪
-        if 'volume_ratio' in current_data and current_data['volume_ratio'] > 1.2:
-            sentiment_score += 10
-            signals.append("成交量放大")
+        if 'volume_ratio' in current_data:
+            if current_data['volume_ratio'] > 1.5:
+                sentiment_score += 15
+                signals.append("成交量大幅放大")
+                detailed_scores['成交量大幅放大'] = 15
+            elif current_data['volume_ratio'] > 1.2:
+                sentiment_score += 10
+                signals.append("成交量温和放大")
+                detailed_scores['成交量温和放大'] = 10
         
         # 波动率情绪
         if 'ATR' in df.columns and len(df) >= 20:
@@ -405,46 +423,72 @@ class MarketSentimentAnalyzer:
             if current_data['ATR'] < atr_ma:
                 sentiment_score += 5
                 signals.append("低波动环境")
+                detailed_scores['低波动环境'] = 5
         
         # 超买超卖情绪
         if 'RSI_12' in current_data:
             if current_data['RSI_12'] < 30:
                 sentiment_score += 15
                 signals.append("RSI超卖")
+                detailed_scores['RSI超卖'] = 15
             elif current_data['RSI_12'] > 70:
                 sentiment_score -= 15
                 signals.append("RSI超买")
+                detailed_scores['RSI超买'] = -15
         
         # 趋势情绪
         if 'MACD' in current_data and 'MACD_signal' in current_data:
             if current_data['MACD'] > current_data['MACD_signal']:
                 sentiment_score += 10
                 signals.append("MACD金叉")
+                detailed_scores['MACD金叉'] = 10
         
         # 资金流向情绪
         if 'MFI' in current_data:
             if current_data['MFI'] > 80:
                 sentiment_score -= 10
                 signals.append("MFI超买")
+                detailed_scores['MFI超买'] = -10
             elif current_data['MFI'] < 20:
                 sentiment_score += 10
                 signals.append("MFI超卖")
+                detailed_scores['MFI超卖'] = 10
+        
+        # 均线排列情绪
+        if all(col in current_data for col in ['MA20', 'MA60', 'MA120']):
+            if current_data['MA20'] > current_data['MA60'] > current_data['MA120']:
+                sentiment_score += 10
+                signals.append("多头排列")
+                detailed_scores['多头排列'] = 10
+            elif current_data['MA20'] < current_data['MA60'] < current_data['MA120']:
+                sentiment_score -= 10
+                signals.append("空头排列")
+                detailed_scores['空头排列'] = -10
         
         return {
             'sentiment_score': max(0, min(100, sentiment_score)),
             'sentiment_level': self.get_sentiment_level(sentiment_score),
-            'signals': signals
+            'signals': signals,
+            'detailed_scores': detailed_scores
         }
     
     def get_sentiment_level(self, score):
-        if score >= 70:
+        if score >= 80:
             return "极度乐观"
+        elif score >= 70:
+            return "非常乐观"
         elif score >= 60:
             return "乐观"
+        elif score >= 50:
+            return "略微乐观"
         elif score >= 40:
             return "中性"
         elif score >= 30:
+            return "略微悲观"
+        elif score >= 20:
             return "悲观"
+        elif score >= 10:
+            return "非常悲观"
         else:
             return "极度悲观"
 
@@ -1355,8 +1399,212 @@ def display_indicator_details(df):
             st.write(f"- **MA20**: {current_data['MA20']:.2f}")
             st.write(f"- **MA60**: {current_data['MA60']:.2f} ({ma60_direction})")
             st.write(f"- **MA120**: {current_data['MA120']:.2f}")
+            
+            # 均线金叉分析
+            if (current_data['MA60'] > current_data['MA60_direction'] and 
+                current_data['MA20'] > current_data['MA60']):
+                st.info("**MA60上穿MA120金叉**: 牛熊转换信号")
         else:
             st.warning("均线数据不足")
+    
+    # 成交量指标分析 (政委级)
+    st.write("### 📊 成交量指标分析 (政委级 - 验真伪)")
+    
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        st.write("#### 成交量分析")
+        if 'volume_ratio' in current_data:
+            volume_ratio = current_data['volume_ratio']
+            if volume_ratio > 1.5:
+                volume_status = "🟢 放量"
+                st.success(f"**放量**: 比率{volume_ratio:.2f}倍")
+                st.write("- **策略**: 真信号，可参与")
+            elif volume_ratio > 1.2:
+                volume_status = "🟡 温和"
+                st.info(f"**温和**: 比率{volume_ratio:.2f}倍")
+                st.write("- **策略**: 正常参与")
+            else:
+                volume_status = "🔴 缩量"
+                st.error(f"**缩量**: 比率{volume_ratio:.2f}倍")
+                st.write("- **策略**: 假信号，不参与")
+            
+            st.write(f"- **成交量**: {current_data['vol']:.0f}")
+            if 'VMA5' in current_data:
+                st.write(f"- **VMA5**: {current_data['VMA5']:.0f}")
+        else:
+            st.warning("成交量数据不足")
+    
+    with col4:
+        st.write("#### OBV能量潮")
+        if all(col in current_data for col in ['OBV', 'close']) and prev_data is not None:
+            obv_trend = "上升" if current_data['OBV'] > prev_data['OBV'] else "下降"
+            price_trend = "上升" if current_data['close'] > prev_data['close'] else "下降"
+            
+            if price_trend == "上升" and obv_trend == "上升":
+                st.success("**健康上涨**: 价涨量增")
+                st.write("- **策略**: 可持有")
+            elif price_trend == "上升" and obv_trend == "下降":
+                st.warning("**顶背离**: 价涨量缩")
+                st.write("- **策略**: 准备减仓")
+            elif price_trend == "下降" and obv_trend == "下降":
+                st.error("**正常下跌**: 价跌量缩")
+                st.write("- **策略**: 别抄底")
+            elif price_trend == "下降" and obv_trend == "上升":
+                st.info("**底背离**: 价跌量增")
+                st.write("- **策略**: 关注机会")
+            
+            st.write(f"- **OBV**: {current_data['OBV']:.0f}")
+            st.write(f"- **趋势**: {obv_trend}")
+        else:
+            st.warning("OBV数据不足")
+    
+    # 动量指标分析 (参谋级)
+    st.write("### ⚡ 动量指标分析 (参谋级 - 找时机)")
+    
+    col5, col6 = st.columns(2)
+    
+    with col5:
+        st.write("#### RSI分析")
+        if all(col in current_data for col in ['RSI_6', 'RSI_12', 'RSI_24']):
+            rsi_6 = current_data['RSI_6']
+            rsi_12 = current_data['RSI_12']
+            rsi_24 = current_data['RSI_24']
+            
+            # RSI多周期分析
+            st.write(f"- **RSI_6**: {rsi_6:.1f}")
+            st.write(f"- **RSI_12**: {rsi_12:.1f}")
+            st.write(f"- **RSI_24**: {rsi_24:.1f}")
+            
+            if rsi_12 > 70:
+                st.error("**超买区域**: RSI>70")
+                st.write("- **策略**: 谨慎，可能回调")
+            elif rsi_12 < 30:
+                st.success("**超卖区域**: RSI<30")
+                st.write("- **策略**: 关注反弹机会")
+            elif rsi_12 > 50:
+                st.info("**强势区域**: RSI>50")
+                st.write("- **策略**: 持仓线之上")
+            else:
+                st.warning("**弱势区域**: RSI<50")
+                st.write("- **策略**: 减仓线之下")
+        else:
+            st.warning("RSI数据不足")
+    
+    with col6:
+        st.write("#### KDJ分析")
+        if all(col in current_data for col in ['K', 'D', 'J']) and prev_data is not None:
+            kdj_cross = "金叉" if current_data['K'] > current_data['D'] else "死叉"
+            k_prev = prev_data.get('K', 0)
+            d_prev = prev_data.get('D', 0)
+            fresh_cross = (current_data['K'] > current_data['D'] and k_prev <= d_prev) or \
+                         (current_data['K'] < current_data['D'] and k_prev >= d_prev)
+            
+            st.write(f"- **K值**: {current_data['K']:.1f}")
+            st.write(f"- **D值**: {current_data['D']:.1f}")
+            st.write(f"- **J值**: {current_data['J']:.1f}")
+            st.write(f"- **状态**: {kdj_cross}")
+            
+            if fresh_cross:
+                if current_data['K'] > current_data['D']:
+                    st.success("**新鲜金叉**: 买入时机")
+                else:
+                    st.error("**新鲜死叉**: 卖出时机")
+            else:
+                st.info("**延续状态**: 保持现有策略")
+        else:
+            st.warning("KDJ数据不足")
+    
+    # 波动率指标分析 (工兵级)
+    st.write("### 📏 波动率指标分析 (工兵级 - 划边界)")
+    
+    col7, col8 = st.columns(2)
+    
+    with col7:
+        st.write("#### 布林带分析")
+        if all(col in current_data for col in ['BB_position', 'BB_upper', 'BB_middle', 'BB_lower']):
+            boll_position = current_data['BB_position']
+            if boll_position > 0.8:
+                boll_status = "🔴 上轨压力"
+                st.error("**上轨压力**: 位置{:.2f}".format(boll_position))
+                st.write("- **策略**: 减仓30%")
+            elif boll_position < 0.2:
+                boll_status = "🟢 下轨支撑"
+                st.success("**下轨支撑**: 位置{:.2f}".format(boll_position))
+                st.write("- **策略**: 关注支撑")
+            else:
+                boll_status = "🟡 中轨附近"
+                st.info("**中轨附近**: 位置{:.2f}".format(boll_position))
+                st.write("- **策略**: 正常持仓")
+            
+            st.write(f"- **上轨**: {current_data['BB_upper']:.2f}")
+            st.write(f"- **中轨**: {current_data['BB_middle']:.2f}")
+            st.write(f"- **下轨**: {current_data['BB_lower']:.2f}")
+        else:
+            st.warning("布林带数据不足")
+    
+    with col8:
+        st.write("#### ATR波动分析")
+        if 'ATR' in current_data and 'close' in current_data:
+            atr_value = current_data['ATR']
+            atr_ma = df['ATR'].rolling(20).mean().iloc[-1] if len(df) >= 20 else atr_value
+            
+            st.write(f"- **ATR**: {atr_value:.3f}")
+            st.write(f"- **20日均值**: {atr_ma:.3f}")
+            
+            if atr_value > atr_ma:
+                st.warning("**高波动期**: ATR高于均值")
+                st.write("- **策略**: 止损放宽1.5倍")
+            else:
+                st.success("**低波动期**: ATR低于均值")
+                st.write("- **策略**: 正常止损")
+            
+            # 计算止损位
+            stop_loss = current_data['close'] - atr_value * 1.5
+            st.write(f"- **建议止损**: {stop_loss:.2f}")
+        else:
+            st.warning("ATR数据不足")
+    
+    # 新增指标分析
+    st.write("### 🔮 其他专业指标分析")
+    
+    col9, col10 = st.columns(2)
+    
+    with col9:
+        st.write("#### DMI指标分析")
+        if all(col in current_data for col in ['+DI', '-DI', 'ADX']):
+            st.write(f"- **+DI**: {current_data['+DI']:.1f}")
+            st.write(f"- **-DI**: {current_data['-DI']:.1f}")
+            st.write(f"- **ADX**: {current_data['ADX']:.1f}")
+            
+            if current_data['+DI'] > current_data['-DI']:
+                st.info("**上升趋势**: +DI > -DI")
+            else:
+                st.warning("**下降趋势**: +DI < -DI")
+                
+            if current_data['ADX'] > 25:
+                st.success("**趋势强劲**: ADX > 25")
+            else:
+                st.info("**趋势较弱**: ADX < 25")
+        else:
+            st.warning("DMI数据不足")
+    
+    with col10:
+        st.write("#### 威廉指标分析")
+        if 'WR' in current_data:
+            wr_value = current_data['WR']
+            st.write(f"- **威廉指标**: {wr_value:.1f}")
+            
+            if wr_value < -80:
+                st.success("**超卖区域**: WR < -80")
+                st.write("- **策略**: 关注买入机会")
+            elif wr_value > -20:
+                st.error("**超买区域**: WR > -20")
+                st.write("- **策略**: 注意回调风险")
+            else:
+                st.info("**正常区域**: -80 < WR < -20")
+        else:
+            st.warning("威廉指标数据不足")
 
 def display_data_quality_report(df, analyzer):
     """显示数据质量报告"""
@@ -1377,6 +1625,13 @@ def display_data_quality_report(df, analyzer):
         st.warning("发现以下数据质量问题:")
         for issue in quality_report['issues']:
             st.write(f"- {issue}")
+        
+        st.info("""
+        **说明:**
+        - 技术指标的前N个值为NaN是正常的，因为需要计算周期
+        - 重点关注原始数据(开盘、收盘、高低价、成交量)的缺失
+        - 数据断点可能影响长期指标的准确性
+        """)
     else:
         st.success("数据质量良好，无重大问题")
     
@@ -1453,7 +1708,7 @@ def display_risk_management_report(df, signal_strength):
     st.dataframe(pd.DataFrame(risk_reward_data), use_container_width=True)
 
 def display_market_sentiment(df, analyzer):
-    """显示市场情绪分析"""
+    """显示市场情绪分析 - 透明化计算过程"""
     if df is None or len(df) == 0:
         st.warning("数据不足进行情绪分析")
         return
@@ -1503,6 +1758,47 @@ def display_market_sentiment(df, analyzer):
                 st.write(f"- {signal}")
         else:
             st.write("暂无明确情绪信号")
+    
+    # 显示详细得分构成
+    st.write("#### 🎯 情绪分数构成")
+    
+    if sentiment['detailed_scores']:
+        score_data = []
+        base_score = 50
+        
+        score_data.append({
+            '项目': '基础分数',
+            '得分': base_score,
+            '说明': '情绪分析的起始基准分'
+        })
+        
+        for signal, score in sentiment['detailed_scores'].items():
+            score_data.append({
+                '项目': signal,
+                '得分': score,
+                '说明': f"该信号{'增加' if score > 0 else '减少'}了情绪分数"
+            })
+        
+        score_df = pd.DataFrame(score_data)
+        st.dataframe(score_df, use_container_width=True)
+        
+        # 显示计算过程
+        st.write("#### 🧮 情绪计算逻辑")
+        st.write(f"**计算公式**: 基础分({base_score}) + 各信号得分总和 = 最终情绪分数({sentiment_score})")
+        st.write("""
+        **评分标准说明**:
+        - 价格在20日均线上方: +10分 (技术面强势)
+        - 成交量大幅放大(>1.5倍): +15分 (资金关注度高)
+        - 成交量温和放大(1.2-1.5倍): +10分 (资金关注度中等)
+        - 低波动环境: +5分 (市场稳定)
+        - RSI超卖(<30): +15分 (超卖反弹概率大)
+        - RSI超买(>70): -15分 (超买回调风险)
+        - MACD金叉: +10分 (趋势转强)
+        - MFI超卖(<20): +10分 (资金流出过度)
+        - MFI超买(>80): -10分 (资金流入过热)
+        - 多头排列: +10分 (趋势明确向上)
+        - 空头排列: -10分 (趋势明确向下)
+        """)
 
 def display_backtest_results(df):
     """显示回测结果"""
